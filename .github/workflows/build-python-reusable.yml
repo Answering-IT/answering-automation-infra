@@ -71,10 +71,20 @@ jobs:
 
       - name: Run pytest
         run: |
-          # Run unit/smoke marked tests. If no tests are marked, exit cleanly
-          # rather than failing — projects can adopt markers gradually.
-          if pytest -m "unit or smoke" --collect-only -q 2>/dev/null | grep -q "test"; then
-            pytest -m "unit or smoke" --tb=short
-          else
-            echo "::notice::No tests marked 'unit' or 'smoke' found — skipping pytest. Add @pytest.mark.unit or @pytest.mark.smoke to enable gating."
+          # Run unit/smoke marked tests.
+          # pytest exit codes:
+          #   0 = all tests passed
+          #   1 = some tests failed
+          #   2 = collection error (e.g. import error in a test file)
+          #   5 = no tests collected (no markers matched)
+          # Treat exit code 5 as success — projects can adopt markers
+          # gradually without being blocked by the gate.
+          set +e
+          pytest -m "unit or smoke" --tb=short
+          rc=$?
+          set -e
+          if [ "$rc" = "5" ]; then
+            echo "::notice::No tests marked 'unit' or 'smoke' found — skipping. Add @pytest.mark.unit or @pytest.mark.smoke to enable gating."
+            exit 0
           fi
+          exit $rc
