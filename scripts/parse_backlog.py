@@ -22,8 +22,8 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BACKLOG = REPO_ROOT / "BACKLOG.md"
+# When run from the repo root (most common case, including CI)
+DEFAULT_BACKLOG = Path("BACKLOG.md")
 
 VALID_STATUSES = {"ready", "blocked", "in_progress", "done"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
