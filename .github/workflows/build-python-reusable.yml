@@ -53,12 +53,28 @@ jobs:
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           fi
-          # Install runtime deps if they exist (common patterns)
+          # Install runtime deps - check common patterns:
+          #   - Top-level requirements.txt (single-app projects)
+          #   - agents/requirements.txt (kb-rag-agent pattern)
+          #   - infrastructure/lambdas/*/requirements.txt (CDK Lambda projects)
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          elif [ -f agents/requirements.txt ]; then
+          fi
+          if [ -f agents/requirements.txt ]; then
             pip install -r agents/requirements.txt
           fi
+          # Find and install any Lambda function requirements (CDK projects)
+          for req in $(find infrastructure/lambdas -name "requirements.txt" 2>/dev/null); do
+            echo "Installing Lambda deps: $req"
+            pip install -r "$req"
+          done
 
       - name: Run pytest
-        run: pytest -m "unit or smoke" --tb=short
+        run: |
+          # Run unit/smoke marked tests. If no tests are marked, exit cleanly
+          # rather than failing — projects can adopt markers gradually.
+          if pytest -m "unit or smoke" --collect-only -q 2>/dev/null | grep -q "test"; then
+            pytest -m "unit or smoke" --tb=short
+          else
+            echo "::notice::No tests marked 'unit' or 'smoke' found — skipping pytest. Add @pytest.mark.unit or @pytest.mark.smoke to enable gating."
+          fi
