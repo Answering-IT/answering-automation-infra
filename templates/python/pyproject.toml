@@ -1,0 +1,45 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
+ignore = []
+
+[tool.black]
+line-length = 120
+target-version = ['py311']
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Fast unit tests with no external dependencies",
+    "smoke: Smoke tests (import checks, basic functionality)",
+    "integration: Integration tests (may require external services)",
+    "e2e: End-to-end tests",
+    "slow: Tests that take significant time",
+]
+addopts = "-ra --strict-markers --tb=short"
+norecursedirs = [
+    ".git",
+    ".github",
+    ".venv",
+    "venv",
+    "node_modules",
+    "build",
+    "dist",
+    "__pycache__",
+    "*.egg-info",
+    "cdk.out",
+]

@@ -1,0 +1,255 @@
+name: Auto Maintain (Reusable)
+
+# Reusable workflow that reads BACKLOG.md, picks the next item, hands it to
+# Claude via Bedrock, and opens a PR.
+#
+# Called by consumer repos via workflow_call. See README.md for usage.
+
+on:
+  workflow_call:
+    inputs:
+      backlog_id:
+        description: 'Specific backlog item id to implement (leave blank for --next)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Print the picked item and prompt, do not invoke Claude or open a PR'
+        required: false
+        type: boolean
+        default: false
+      language:
+        description: 'Language/stack: python | typescript | go'
+        required: true
+        type: string
+      bedrock_model:
+        description: 'Bedrock model ID'
+        required: false
+        type: string
+        default: 'us.anthropic.claude-sonnet-4-6'
+      aws_region:
+        description: 'AWS region'
+        required: false
+        type: string
+        default: 'us-east-1'
+      aws_role_arn:
+        description: 'AWS IAM role ARN'
+        required: false
+        type: string
+        default: 'arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole'
+    secrets:
+      AUTO_MAINTAIN_APP_ID:
+        required: true
+      AUTO_MAINTAIN_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  id-token: write       # AWS OIDC
+  contents: write       # commit + push branch
+  pull-requests: write  # open PR
+  issues: write         # claude-code-action may comment
+
+# One run at a time per repo — prevents concurrent PRs against the same backlog.
+concurrency:
+  group: auto-maintain-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  pick-item:
+    name: Pick next backlog item
+    runs-on: ubuntu-latest
+    outputs:
+      has_item: ${{ steps.pick.outputs.has_item }}
+      item_id: ${{ steps.pick.outputs.item_id }}
+      item_title: ${{ steps.pick.outputs.item_title }}
+      item_json: ${{ steps.pick.outputs.item_json }}
+
+    steps:
+      - name: Validate caller
+        run: |
+          if [[ "${GITHUB_REPOSITORY_OWNER}" != "Answering-IT" ]]; then
+            echo "::error::Unauthorized caller: ${GITHUB_REPOSITORY_OWNER}"
+            exit 1
+          fi
+          echo "✅ Caller validated: ${GITHUB_REPOSITORY}"
+
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download parser from central repo
+        run: |
+          curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v1.0.0/scripts/parse_backlog.py -o parse_backlog.py
+          pip install pyyaml
+
+      - name: Pick item
+        id: pick
+        env:
+          OVERRIDE_ID: ${{ inputs.backlog_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OVERRIDE_ID}" ]; then
+            echo "Looking for explicit id: ${OVERRIDE_ID}"
+            ITEM=$(python parse_backlog.py --list | python -c "
+          import json, sys, os
+          target = os.environ['OVERRIDE_ID']
+          items = json.load(sys.stdin)
+          match = next((i for i in items if i['id'] == target and i['status'] == 'ready'), None)
+          print(json.dumps(match))
+          ")
+          else
+            ITEM=$(python parse_backlog.py --next)
+          fi
+
+          if [ "${ITEM}" = "null" ] || [ -z "${ITEM}" ]; then
+            echo "No eligible backlog item found."
+            echo "has_item=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ID=$(echo "${ITEM}" | python -c "import json,sys; print(json.load(sys.stdin)['id'])")
+          TITLE=$(echo "${ITEM}" | python -c "import json,sys; print(json.load(sys.stdin)['title'])")
+
+          echo "Picked: ${ID} — ${TITLE}"
+          echo "has_item=true" >> "$GITHUB_OUTPUT"
+          echo "item_id=${ID}" >> "$GITHUB_OUTPUT"
+          echo "item_title=${TITLE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "item_json<<ITEMJSON_EOF"
+            echo "${ITEM}"
+            echo "ITEMJSON_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing automated PR
+        if: steps.pick.outputs.has_item == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ITEM_ID: ${{ steps.pick.outputs.item_id }}
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh pr list --label automated --state open --search "auto/${ITEM_ID}" --json number --jq '. | length')
+          if [ "${EXISTING}" -gt 0 ]; then
+            echo "::error::An open automated PR already exists for ${ITEM_ID}. Close or merge it first."
+            exit 1
+          fi
+
+  implement:
+    name: Implement with Claude
+    runs-on: ubuntu-latest
+    needs: pick-item
+    if: needs.pick-item.outputs.has_item == 'true'
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
+          private-key: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Build prompt for Claude
+        id: prompt
+        env:
+          ITEM_JSON: ${{ needs.pick-item.outputs.item_json }}
+          LANGUAGE: ${{ inputs.language }}
+        run: |
+          set -euo pipefail
+          mkdir -p .auto-maintain
+          python <<'PY' > .auto-maintain/prompt.md
+          import json, os, textwrap
+
+          item = json.loads(os.environ["ITEM_JSON"])
+          lang = os.environ["LANGUAGE"]
+
+          # Language-specific gate commands
+          gates = {
+              "python": ["ruff check .", "black --check .", "pytest -m \"unit or smoke\""],
+              "typescript": ["npm run lint", "npm run build", "npm test"],
+              "go": ["golangci-lint run", "go build ./...", "go test ./..."]
+          }
+
+          parts = []
+          parts.append(f"You are implementing backlog item **{item['id']}** in this repository.\n")
+          parts.append(f"## Title\n{item['title']}\n")
+          parts.append(f"## Why this matters\n{item['context']}\n")
+          parts.append("## Acceptance criteria\n" + "\n".join(f"- {c}" for c in item['acceptance_criteria']) + "\n")
+
+          if item.get('files_to_touch'):
+              parts.append("## Likely files to touch (hints, not prescriptive)\n" +
+                           "\n".join(f"- `{p}`" for p in item['files_to_touch']) + "\n")
+          if item.get('tests_required'):
+              parts.append("## Tests required\n" +
+                           "\n".join(f"- {t}" for t in item['tests_required']) + "\n")
+          if item.get('notes'):
+              parts.append(f"## Notes\n{item['notes']}\n")
+
+          gate_cmds = gates.get(lang, gates["python"])
+          parts.append(textwrap.dedent(f"""
+              ## Working agreement
+
+              - Stay within the scope described above. Don't refactor unrelated code.
+              - Follow the existing patterns in the codebase. Prefer editing files over creating new ones.
+              - Run the local gates before finishing:
+                {chr(10).join(f"  - `{cmd}`" for cmd in gate_cmds)}
+              - All gates must pass. If a fix would require changing more than the acceptance criteria
+                imply, stop and document the blocker in the PR description rather than expanding scope.
+              - When you commit, branch name must be `auto/{item['id']}` (it is already created for you).
+              - Open a single PR titled exactly: `auto({item['id']}): {item['title']}`
+              - The PR description must include:
+                - A short "what changed" section
+                - The acceptance criteria, with checkboxes ticked for what's done
+                - Any blockers or follow-ups, if applicable
+              - Apply the labels `automated` and `backlog-driven` to the PR.
+
+              ## Repo conventions
+              - Follow existing code style and patterns in this repository.
+              - Do not introduce new top-level dependencies without justification.
+              - Tests should be isolated and fast.
+
+              Now do the work.
+              """).strip())
+
+          print("\n\n".join(parts))
+          PY
+          echo "prompt_path=.auto-maintain/prompt.md" >> "$GITHUB_OUTPUT"
+
+      - name: Show prompt (always)
+        run: cat .auto-maintain/prompt.md
+
+      - name: Dry run — exit before Claude invocation
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "::notice::Dry run requested. Skipping Claude invocation and PR creation."
+          exit 0
+
+      - name: Run Claude Code (Bedrock)
+        if: ${{ !inputs.dry_run }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_bedrock: 'true'
+          github_token: ${{ steps.app-token.outputs.token }}
+          branch_prefix: 'auto/'
+          base_branch: main
+          prompt: ${{ steps.prompt.outputs.prompt_path }}
+          show_full_output: 'true'
+          claude_args: |
+            --model ${{ inputs.bedrock_model }}
+            --max-turns 40
+            --permission-mode acceptEdits
+            --allowedTools "Read,Glob,Grep,LS,Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git branch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git fetch:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue list:*),Bash(gh label create:*),Bash(ruff:*),Bash(black:*),Bash(pytest:*),Bash(python:*),Bash(python3:*),Bash(pip:*),Bash(pip3:*),Bash(npm:*),Bash(npx:*),Bash(go:*),Bash(golangci-lint:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(mkdir:*),Bash(test:*)"
+        env:
+          AWS_REGION: ${{ inputs.aws_region }}
