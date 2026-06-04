@@ -83,7 +83,7 @@ jobs:
 
       - name: Download parser from central repo
         run: |
-          curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v1.0.0/scripts/parse_backlog.py -o parse_backlog.py
+          curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_backlog.py -o parse_backlog.py
           pip install pyyaml
 
       - name: Pick item
