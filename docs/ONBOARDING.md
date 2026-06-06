@@ -211,7 +211,10 @@ The App needs these permissions (already configured if it was set up correctly):
   - Contents: Read & write
   - Issues: Read & write
   - Pull requests: Read & write
+  - Workflows: Read & write ⚠️ **Required to modify `.github/workflows/` files**
   - Metadata: Read
+
+**Important:** If the `Workflows` permission is missing, Claude will be able to create PRs but will fail when trying to push changes to files in `.github/workflows/`. The error will be: `refusing to allow a GitHub App to create or update workflow...`
 
 If permissions are wrong, you'll see errors like "Resource not accessible by integration" when Claude tries to push or open a PR. Fix at `https://github.com/settings/apps/answering-auto-maintain/permissions`.
 
@@ -314,6 +317,7 @@ These are infrastructure things that should be set up once for the entire `Answe
    - Contents: **Read & write**
    - Issues: **Read & write**
    - Pull requests: **Read & write**
+   - Workflows: **Read & write** ⚠️ **Required to modify `.github/workflows/` files**
    - Metadata: **Read**
 6. **Where can this GitHub App be installed?:** **Only on this account**
 7. Click **Create GitHub App**

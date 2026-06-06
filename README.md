@@ -43,11 +43,32 @@ docs/
 
 ## Quick start (for a new consumer repo)
 
-1. Read [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — full step-by-step including manual GitHub config.
-2. Copy `templates/python/*` to your repo.
-3. Add `.github/workflows/AutoMaintain.yml` and `.github/workflows/Build.yml` (slim callers — see ONBOARDING).
-4. Configure repository secrets `AUTO_MAINTAIN_APP_ID` and `AUTO_MAINTAIN_APP_PRIVATE_KEY` (see ONBOARDING for exact values).
-5. Trigger `Auto Maintain` from the Actions tab.
+**Read the complete setup guide:** [`docs/SETUP-GUIDE.md`](docs/SETUP-GUIDE.md)
+
+### TL;DR
+
+**Automated setup:**
+```bash
+gh workflow run setup-repo.yml \
+  --repo Answering-IT/answering-automation-infra \
+  -f target_repo=Answering-IT/<your-repo> \
+  -f language=python
+```
+
+**Manual setup:**
+1. Ensure GitHub App has `Workflows: Read and write` permission
+2. Install app on target repo
+3. Add workflow files from templates
+4. Set repository secrets
+5. Enable "Allow Actions to create PRs"
+6. Test with dry run
+
+**Validate setup:**
+```bash
+./scripts/validate-setup.sh Answering-IT/<your-repo>
+```
+
+See [`docs/SETUP-GUIDE.md`](docs/SETUP-GUIDE.md) for complete instructions.
 
 ---
 
@@ -117,7 +138,18 @@ Projects adopting the workflow shouldn't need to backfill `@pytest.mark.unit`/`s
 
 ## Documentation
 
-- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — Add auto-maintain to a new repo, with all manual GitHub steps
-- [`docs/BACKLOG_FORMAT.md`](docs/BACKLOG_FORMAT.md) — Schema for `BACKLOG.md` items
+### Getting Started
+- **[`docs/SETUP-GUIDE.md`](docs/SETUP-GUIDE.md)** — **Start here**: Complete setup guide (all-in-one)
+
+### Reference
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — Common failures and fixes
+- [`docs/github-issues-integration.md`](docs/github-issues-integration.md) — GitHub Issues mode (recommended)
+- [`docs/BACKLOG_FORMAT.md`](docs/BACKLOG_FORMAT.md) — BACKLOG.md schema reference (legacy)
+
+### Deep Dives
+- [`docs/WORKFLOWS-PERMISSION-EXPLAINED.md`](docs/WORKFLOWS-PERMISSION-EXPLAINED.md) — Why Workflows permission is required
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — Detailed step-by-step guide (alternative to SETUP-GUIDE)
+- [`docs/COMPLETE-SETUP-GUIDE.md`](docs/COMPLETE-SETUP-GUIDE.md) — Comprehensive guide with context
+
+### Project Info
 - [`CHANGELOG.md`](CHANGELOG.md) — Version history

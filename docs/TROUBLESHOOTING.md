@@ -109,6 +109,28 @@ The condition should include `"repo:Answering-IT/*:*"`. If it lists specific rep
 2. If gates failed, the backlog item is likely too ambitious. Make it more specific or break it up.
 3. If checks aren't running on the auto-PR, broaden `Build.yml` path filters to match what Claude touches.
 
+### `refusing to allow a GitHub App to create or update workflow` when pushing to `.github/workflows/`
+
+**Cause:** The GitHub App `answering-auto-maintain` doesn't have the `Workflows: Read & write` permission. This permission is required to push changes to files in the `.github/workflows/` directory.
+
+**Symptoms:**
+- Claude successfully makes changes and commits them locally
+- Push fails with error: `refusing to allow a GitHub App to create or update workflow...`
+- The branch exists locally but was never pushed to remote
+- No PR is created
+
+**Fix:**
+1. Go to `https://github.com/settings/apps/answering-auto-maintain/permissions`
+2. Under **Repository permissions**, find **Workflows**
+3. Change it from `No access` to `Read and write`
+4. Click **Save changes**
+5. You may need to accept the permission change in each installed repository:
+   - Go to `https://github.com/settings/installations`
+   - Click **Configure** next to `answering-auto-maintain`
+   - Review and accept the new permission request
+
+**Note:** This permission is required ONLY if your backlog items include changes to workflow files. If you never need to modify `.github/workflows/`, you can skip this permission.
+
 ### Claude times out (30 min default)
 
 **Cause:** Item too complex, or Claude stuck in a loop (tests failing, retries indefinitely).

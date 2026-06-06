@@ -1,4 +1,4 @@
-name: Auto Maintain (Reusable)
+name: Auto Maintain
 
 # Reusable workflow that reads GitHub Issues (default) or BACKLOG.md (legacy),
 # picks the next item, hands it to Claude via Bedrock, and opens a PR.
@@ -290,6 +290,7 @@ jobs:
           exit 0
 
       - name: Run Claude Code (Bedrock)
+        id: claude
         if: ${{ !inputs.dry_run }}
         uses: anthropics/claude-code-action@v1
         with:
@@ -306,3 +307,27 @@ jobs:
             --allowedTools "Read,Glob,Grep,LS,Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git branch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git fetch:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue list:*),Bash(gh label create:*),Bash(ruff:*),Bash(black:*),Bash(pytest:*),Bash(python:*),Bash(python3:*),Bash(pip:*),Bash(pip3:*),Bash(npm:*),Bash(npx:*),Bash(go:*),Bash(golangci-lint:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(mkdir:*),Bash(test:*)"
         env:
           AWS_REGION: ${{ inputs.aws_region }}
+
+      - name: Verify PR was created
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ITEM_ID: ${{ needs.pick-item.outputs.item_id }}
+        run: |
+          set -euo pipefail
+
+          # Wait a moment for PR to be fully created
+          sleep 5
+
+          # Check if PR exists for this item
+          PR_COUNT=$(gh pr list --label automated --state open --search "auto/${ITEM_ID}" --json number --jq '. | length')
+
+          if [ "${PR_COUNT}" -eq 0 ]; then
+            echo "::error::Expected PR for ${ITEM_ID} was not created. Claude step may have failed or encountered an error."
+            echo "::error::Check the Claude Code step output above for details."
+            exit 1
+          fi
+
+          PR_NUMBER=$(gh pr list --label automated --state open --search "auto/${ITEM_ID}" --json number --jq '.[0].number')
+          echo "✅ PR #${PR_NUMBER} successfully created for ${ITEM_ID}"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
