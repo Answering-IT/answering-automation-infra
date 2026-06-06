@@ -22,6 +22,21 @@ on:
         description: 'Language/stack: python | typescript | go'
         required: true
         type: string
+      use_github_issues:
+        description: 'Use GitHub Issues instead of BACKLOG.md'
+        required: false
+        type: boolean
+        default: false
+      milestone:
+        description: 'Filter issues by milestone title (only when use_github_issues=true)'
+        required: false
+        type: string
+        default: ''
+      issue_label:
+        description: 'Filter issues by label (only when use_github_issues=true)'
+        required: false
+        type: string
+        default: ''
       bedrock_model:
         description: 'Bedrock model ID'
         required: false
@@ -83,30 +98,62 @@ jobs:
 
       - name: Download parser from central repo
         run: |
-          curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_backlog.py -o parse_backlog.py
-          pip install pyyaml
+          if [ "${{ inputs.use_github_issues }}" = "true" ]; then
+            echo "Using GitHub Issues parser"
+            curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_github_issues.py -o parse_items.py
+          else
+            echo "Using BACKLOG.md parser"
+            curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_backlog.py -o parse_items.py
+            pip install pyyaml
+          fi
 
       - name: Pick item
         id: pick
         env:
           OVERRIDE_ID: ${{ inputs.backlog_id }}
+          USE_ISSUES: ${{ inputs.use_github_issues }}
+          MILESTONE: ${{ inputs.milestone }}
+          LABEL: ${{ inputs.issue_label }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -n "${OVERRIDE_ID}" ]; then
-            echo "Looking for explicit id: ${OVERRIDE_ID}"
-            ITEM=$(python parse_backlog.py --list | python -c "
+
+          if [ "${USE_ISSUES}" = "true" ]; then
+            # GitHub Issues mode
+            FILTER_ARGS=""
+            [ -n "${MILESTONE}" ] && FILTER_ARGS="${FILTER_ARGS} --milestone ${MILESTONE}"
+            [ -n "${LABEL}" ] && FILTER_ARGS="${FILTER_ARGS} --label ${LABEL}"
+
+            if [ -n "${OVERRIDE_ID}" ]; then
+              echo "Looking for explicit id: ${OVERRIDE_ID}"
+              ITEM=$(python parse_items.py --list ${FILTER_ARGS} | python -c "
           import json, sys, os
           target = os.environ['OVERRIDE_ID']
           items = json.load(sys.stdin)
           match = next((i for i in items if i['id'] == target and i['status'] == 'ready'), None)
           print(json.dumps(match))
           ")
+            else
+              ITEM=$(python parse_items.py --next ${FILTER_ARGS})
+            fi
           else
-            ITEM=$(python parse_backlog.py --next)
+            # BACKLOG.md mode (legacy)
+            if [ -n "${OVERRIDE_ID}" ]; then
+              echo "Looking for explicit id: ${OVERRIDE_ID}"
+              ITEM=$(python parse_items.py --list | python -c "
+          import json, sys, os
+          target = os.environ['OVERRIDE_ID']
+          items = json.load(sys.stdin)
+          match = next((i for i in items if i['id'] == target and i['status'] == 'ready'), None)
+          print(json.dumps(match))
+          ")
+            else
+              ITEM=$(python parse_items.py --next)
+            fi
           fi
 
           if [ "${ITEM}" = "null" ] || [ -z "${ITEM}" ]; then
-            echo "No eligible backlog item found."
+            echo "No eligible item found."
             echo "has_item=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -198,6 +245,20 @@ jobs:
               parts.append(f"## Notes\n{item['notes']}\n")
 
           gate_cmds = gates.get(lang, gates["python"])
+
+          # Build PR description requirements
+          pr_desc_parts = [
+              "- A short \"what changed\" section",
+              "- The acceptance criteria, with checkboxes ticked for what's done",
+              "- Any blockers or follow-ups, if applicable"
+          ]
+
+          # If this is from a GitHub Issue, add closing keyword
+          if item.get('github_issue_ref'):
+              pr_desc_parts.append(f"- At the end, add: `Closes {item['github_issue_ref']}`")
+
+          pr_desc_requirements = chr(10).join(f"  {p}" for p in pr_desc_parts)
+
           parts.append(textwrap.dedent(f"""
               ## Working agreement
 
@@ -210,9 +271,7 @@ jobs:
               - When you commit, branch name must be `auto/{item['id']}` (it is already created for you).
               - Open a single PR titled exactly: `auto({item['id']}): {item['title']}`
               - The PR description must include:
-                - A short "what changed" section
-                - The acceptance criteria, with checkboxes ticked for what's done
-                - Any blockers or follow-ups, if applicable
+              {pr_desc_requirements}
               - Apply the labels `automated` and `backlog-driven` to the PR.
 
               ## Repo conventions

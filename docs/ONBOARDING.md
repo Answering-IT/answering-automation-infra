@@ -1,91 +1,57 @@
-# Onboarding Guide
+# Onboarding a Repo to Auto-Maintain
 
-Add auto-maintain capabilities to any repository in 5 steps (~15 minutes).
+This guide takes a repository from zero to a working auto-maintain pipeline. It covers **everything**, including the steps that must be done manually in the GitHub UI (because they can't be scripted with the `gh` CLI).
 
----
-
-## Prerequisites
-
-Before starting, ensure these are configured at the organization level:
-
-### 1. GitHub App
-
-The `answering-auto-maintain` app (App ID: 3964884) should be installed org-wide.
-
-**Verify:**
-- Go to: https://github.com/organizations/Answering-IT/settings/installations
-- Check that `answering-auto-maintain` is installed
-- If not, contact org admin
-
-**Secrets (already configured org-level):**
-- `AUTO_MAINTAIN_APP_ID` = `3964884`
-- `AUTO_MAINTAIN_APP_PRIVATE_KEY` = (private key)
-
-### 2. AWS IAM Role
-
-The shared role must trust all org repos:
-- Role: `arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole`
-- Trust policy must include: `"token.actions.githubusercontent.com:sub": "repo:Answering-IT/*:*"`
-
-**Verify:**
-```bash
-aws iam get-role --role-name GitHubActions-Answering-IT-SharedRole --profile ans-super
-```
-
-### 3. GitHub Actions Permissions
-
-Org-level setting must allow Actions to create PRs:
-- Settings → Actions → General
-- ✅ "Allow GitHub Actions to create and approve pull requests"
+**Estimated time:** 30 minutes for the first repo, ~10 minutes for subsequent repos once you've done it once.
 
 ---
 
-## Step-by-Step
+## What you'll have at the end
 
-### Step 1: Identify Your Stack
-
-Determine which template to use:
-- **Python** - Uses ruff, black, pytest
-- **TypeScript** - Uses eslint, prettier, vitest
-- **Go** - Uses golangci-lint, go test
-
-For this guide, we'll use Python as an example.
+- `Build.yml` running on every PR (lint, format, test, optional CDK build)
+- `AutoMaintain.yml` triggerable from the Actions tab
+- Triggering it picks the next item from `BACKLOG.md`, hands it to Claude (via Bedrock), and Claude opens a PR
+- That PR runs through `Build.yml` automatically — same gates as a human PR
 
 ---
 
-### Step 2: Copy Template Files
+## Prerequisites checklist
 
-From this repo's root:
+Before you start, make sure these are true:
+
+- [ ] You have **admin** access to the consumer repo (you'll add secrets and configure Actions)
+- [ ] You have the GitHub App private key (`.pem` file) for `answering-auto-maintain` saved somewhere
+- [ ] You know the GitHub App ID (a number, not a secret — it's public on the App's settings page)
+- [ ] The AWS IAM role `arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole` already trusts `repo:Answering-IT/*:*` (check with the platform team if unsure)
+- [ ] The repo is on `main` as default branch (the workflows assume this)
+
+If any of these are missing, see the [Foundation setup](#foundation-setup-one-time-per-account) section at the bottom.
+
+---
+
+## Part 1: Repo file changes
+
+This part is all standard git — copy files, edit, commit, PR, merge.
+
+### 1.1 Copy template files
+
+From a clone of this repo:
 
 ```bash
-# Clone this repo if you haven't
-git clone https://github.com/Answering-IT/answering-automation-infra.git
-cd answering-automation-infra
+cd /path/to/answering-automation-infra
 
-# Copy template to your repo
-cp -r templates/python/* /path/to/your-repo/
-
-# Navigate to your repo
-cd /path/to/your-repo
-
-# Review what was copied
-ls -la
-# Should see: pyproject.toml, requirements-dev.txt, .python-version, BACKLOG.md
+# Copy template into the consumer repo
+cp templates/python/pyproject.toml         /path/to/your-repo/
+cp templates/python/requirements-dev.txt   /path/to/your-repo/
+cp templates/python/.python-version        /path/to/your-repo/
+cp templates/python/BACKLOG.md             /path/to/your-repo/
 ```
 
-**What you get:**
-- `pyproject.toml` - ruff, black, mypy, pytest config
-- `requirements-dev.txt` - Pinned dev dependencies
-- `.python-version` - Python 3.11
-- `BACKLOG.md` - Pre-populated with example items
+If the consumer repo already has a `pyproject.toml` or `requirements-dev.txt`, **don't blindly overwrite** — merge by hand. The template's ruff config is intentionally pragmatic (only `E,F,W,I` selected, see CHANGELOG for why).
 
----
+### 1.2 Create the caller workflows
 
-### Step 3: Create Workflows
-
-#### A) Auto-Maintain Workflow
-
-Create `.github/workflows/AutoMaintain.yml`:
+#### `.github/workflows/AutoMaintain.yml`
 
 ```yaml
 name: Auto Maintain
@@ -104,267 +70,337 @@ permissions:
   id-token: write       # AWS OIDC
   contents: write       # commit + push
   pull-requests: write  # open PR
+  issues: write         # claude-code-action may comment
 
 jobs:
   run:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.0
+    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.4
     with:
       backlog_id: ${{ inputs.backlog_id }}
       dry_run: ${{ inputs.dry_run }}
-      language: python    # ⚠️ Change this for your stack: python | typescript | go
+      language: python                              # python | typescript | go
       bedrock_model: us.anthropic.claude-sonnet-4-6
     secrets:
       AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
       AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
 ```
 
-**For TypeScript repos:** Change `language: typescript`  
-**For Go repos:** Change `language: go`
+#### `.github/workflows/Build.yml`
 
-#### B) Build & Gates Workflow
-
-Create `.github/workflows/Build.yml`:
+Minimal version:
 
 ```yaml
-name: Build & Gates
+name: Build
 on:
   pull_request:
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - 'requirements*.txt'
-      - 'BACKLOG.md'
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
 
 jobs:
-  gates:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/build-python-reusable.yml@v1.0.0
+  python-gates:
+    name: Python Lint & Tests
+    uses: Answering-IT/answering-automation-infra/.github/workflows/build-python-reusable.yml@v1.0.4
 ```
 
-**For TypeScript repos:**
-```yaml
-jobs:
-  gates:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/build-typescript-reusable.yml@v1.0.0
-```
+If your repo has CDK or other extra build steps, add them as additional jobs after `python-gates`. Look at `external-ingester-consumer-lambda/.github/workflows/Build.yml` for an example.
 
-**For Go repos:**
-```yaml
-jobs:
-  gates:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/build-go-reusable.yml@v1.0.0
-```
+### 1.3 Add a trial backlog item
 
----
+Edit the copied `BACKLOG.md` and make sure it has at least one item with `status: ready`. The template already includes one — leave it for now to validate the pipeline.
 
-### Step 4: Configure Branch Protection
-
-Create `.github/settings.yml` (requires [Probot Settings](https://github.com/apps/settings) app):
-
-```yaml
-repository:
-  name: your-repo-name
-  description: Your repo description
-  
-branches:
-  - name: main
-    protection:
-      required_pull_request_reviews:
-        required_approving_review_count: 1
-      required_status_checks:
-        strict: true
-        contexts:
-          - "Lint & Format"       # Must match job name in Build.yml
-          - "Unit Tests"          # Must match job name in Build.yml
-      enforce_admins: false
-      allow_force_pushes: false
-      allow_deletions: false
-```
-
-**Note:** If Probot Settings is not installed, configure branch protection manually:
-- Repo → Settings → Branches → Add rule
-- Branch name pattern: `main`
-- Enable: "Require a pull request before merging"
-- Enable: "Require status checks to pass before merging"
-- Select: "Lint & Format" and "Unit Tests"
-
----
-
-### Step 5: Commit and Test
+### 1.4 Open a regular PR with these changes
 
 ```bash
-# Stage files
 git checkout -b setup-auto-maintain
 git add .github/workflows/ pyproject.toml requirements-dev.txt .python-version BACKLOG.md
-
-# Commit
-git commit -m "chore: add auto-maintain setup
-
-- Add AutoMaintain.yml and Build.yml workflows
-- Add Python tooling config (ruff, black, pytest)
-- Add BACKLOG.md with trial item"
-
-# Push
-git push origin setup-auto-maintain
-
-# Open PR manually (this PR validates Build.yml works)
-gh pr create --title "Setup auto-maintain pipeline" --body "First PR to validate gates"
+git commit -m "chore: setup auto-maintain pipeline"
+git push -u origin setup-auto-maintain
+gh pr create --title "Setup auto-maintain pipeline" --fill
 ```
 
-**Wait for PR checks to pass**, then merge.
+This first PR validates that `Build.yml` works on a normal human-authored PR. **Merge it once green.** If it fails, fix it on this branch — easier to debug now than later.
 
 ---
 
-### Step 6: First Auto-Maintain Run
+## Part 2: Repository secrets (manual, GitHub UI or CLI)
 
-Now test the auto-maintain workflow:
+The `AutoMaintain.yml` workflow needs two secrets at the repo level. These cannot be inherited from anywhere else because `Answering-IT` is a User account, not an Organization (see [README.md](../README.md#important-this-is-not-a-github-organization)).
+
+### Option A: CLI (faster, requires `gh` admin auth)
 
 ```bash
-# Ensure you're on main and up-to-date
-git checkout main
-git pull
+# App ID is a public identifier (a number) — not actually secret, but stored as one.
+# Look it up at: https://github.com/settings/apps/answering-auto-maintain
+gh secret set AUTO_MAINTAIN_APP_ID \
+  --body "<APP_ID_NUMBER>" \
+  -R Answering-IT/<your-repo>
 
-# Edit BACKLOG.md - ensure the trial item has status: ready
-# (Template already has one ready)
-
-# Trigger workflow manually
-gh workflow run AutoMaintain.yml
+# Private key: paste the PEM contents, or pipe from file
+gh secret set AUTO_MAINTAIN_APP_PRIVATE_KEY \
+  < /path/to/answering-auto-maintain.private-key.pem \
+  -R Answering-IT/<your-repo>
 ```
 
-**Or via GitHub UI:**
-1. Go to: Actions → Auto Maintain
-2. Click "Run workflow"
-3. Leave inputs blank (uses --next selection)
-4. Click "Run workflow"
+Verify:
 
-**Expected result:**
-- Workflow runs for ~5-10 minutes
-- Opens a PR with branch `auto/example-trial-task`
-- PR has labels `automated` and `backlog-driven`
-- Build.yml checks run automatically
-- All gates should pass
-
-**Review the PR:**
-- Check the code changes match acceptance criteria
-- Check that tests pass
-- Merge if looks good
-
----
-
-## Validation Checklist
-
-After completing all steps:
-
-- [ ] Template files copied to repo root
-- [ ] `.github/workflows/AutoMaintain.yml` created
-- [ ] `.github/workflows/Build.yml` created
-- [ ] `.github/settings.yml` created (or branch protection configured manually)
-- [ ] All files committed to main branch
-- [ ] First manual PR opened and merged (validates Build.yml)
-- [ ] First auto-maintain run triggered
-- [ ] Auto-opened PR has correct branch name (`auto/<item-id>`)
-- [ ] Auto-opened PR triggers Build.yml checks
-- [ ] All checks pass on auto-opened PR
-
----
-
-## Troubleshooting
-
-### "No eligible backlog item found"
-
-**Cause:** No items in BACKLOG.md have `status: ready`.
-
-**Fix:**
 ```bash
-# Edit BACKLOG.md
-# Change an item's status from blocked to ready
-status: ready
+gh secret list -R Answering-IT/<your-repo>
+# Should show:
+#   AUTO_MAINTAIN_APP_ID
+#   AUTO_MAINTAIN_APP_PRIVATE_KEY
 ```
 
-### "An open automated PR already exists for {id}"
+### Option B: GitHub UI (manual, click-by-click)
 
-**Cause:** You already have an open PR for this backlog item.
+1. Go to `https://github.com/Answering-IT/<your-repo>/settings/secrets/actions`
+2. Click **New repository secret**
+3. Name: `AUTO_MAINTAIN_APP_ID`
+   Value: the App ID number (visible at `https://github.com/settings/apps/answering-auto-maintain`)
+4. Click **Add secret**
+5. Click **New repository secret** again
+6. Name: `AUTO_MAINTAIN_APP_PRIVATE_KEY`
+   Value: paste the entire PEM contents (including `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----` lines)
+7. Click **Add secret**
 
-**Fix:**
-- Merge or close the existing PR first
-- Or override with a different item: Run workflow → backlog_id: `other-item-id`
+### Where do these values come from?
 
-### Build.yml checks don't run on auto-opened PR
+**App ID:** Public, found at `https://github.com/settings/apps/answering-auto-maintain` (top of the page, "App ID: <number>"). You can copy this from another repo that already has it set, or from the App settings page.
 
-**Cause:** GitHub App token not configured correctly, or org setting disabled.
+**Private key:** This is the `.pem` file you downloaded when the GitHub App was first created. If you lost it:
 
-**Fix:**
-1. Verify org setting: Settings → Actions → General → ✅ "Allow GitHub Actions to create and approve pull requests"
-2. Verify secrets are set: Settings → Secrets → Actions → Check `AUTO_MAINTAIN_APP_ID` and `AUTO_MAINTAIN_APP_PRIVATE_KEY`
+1. Go to `https://github.com/settings/apps/answering-auto-maintain`
+2. Scroll to "Private keys" section
+3. Click **Generate a private key** → downloads a new `.pem` file
+4. Old keys keep working until you revoke them, so it's safe to generate a new one
+5. Use the new file in step A or B above
+6. **Save it somewhere persistent** (password manager, etc.) so you don't have to regenerate every time
 
-### "Role is not authorized to perform: sts:AssumeRoleWithWebIdentity"
+---
 
-**Cause:** IAM role trust policy doesn't include your repo.
+## Part 3: GitHub App installation (manual, GitHub UI)
 
-**Fix:** Contact platform team to update the trust policy with wildcard:
+The GitHub App must be **installed** on each consumer repo (or installed on "All repositories" once and forgotten). Without this, the App can't open PRs in the repo even with valid credentials.
+
+### Verify if already installed
+
+Go to: `https://github.com/Answering-IT/<your-repo>/settings/installations`
+
+If you see `answering-auto-maintain` listed → ✅ already installed, skip to Part 4.
+
+### Install on this repo
+
+1. Go to `https://github.com/apps/answering-auto-maintain` (the public App page)
+2. Click **Install** (or **Configure** if already installed elsewhere)
+3. Choose `Answering-IT` as the account
+4. Select either:
+   - **All repositories** (recommended — covers future repos automatically)
+   - **Only select repositories** → check the consumer repo
+5. Click **Install** (or **Save**)
+
+### Required App permissions
+
+The App needs these permissions (already configured if it was set up correctly):
+
+- **Repository permissions:**
+  - Contents: Read & write
+  - Issues: Read & write
+  - Pull requests: Read & write
+  - Metadata: Read
+
+If permissions are wrong, you'll see errors like "Resource not accessible by integration" when Claude tries to push or open a PR. Fix at `https://github.com/settings/apps/answering-auto-maintain/permissions`.
+
+---
+
+## Part 4: GitHub Actions setting (manual, GitHub UI, repo-level)
+
+By default, GitHub Actions cannot create or approve pull requests. You must enable this **per repo**.
+
+1. Go to `https://github.com/Answering-IT/<your-repo>/settings/actions`
+2. Scroll to **Workflow permissions**
+3. Check ✅ **Allow GitHub Actions to create and approve pull requests**
+4. Click **Save**
+
+Without this, the auto-maintain run will fail with `GitHub Actions is not permitted to create or approve pull requests`. The error is misleading because Claude is using a GitHub App token, not the `GITHUB_TOKEN` — but the setting still applies.
+
+---
+
+## Part 5: Branch protection (recommended, GitHub UI)
+
+You want auto-opened PRs to require the same gates a human PR would. Without branch protection, Claude could merge its own PRs (since the App has write access).
+
+1. Go to `https://github.com/Answering-IT/<your-repo>/settings/branches`
+2. Click **Add classic branch protection rule** (or edit existing rule for `main`)
+3. **Branch name pattern:** `main`
+4. Check the following:
+   - ✅ **Require a pull request before merging**
+     - ✅ Require approvals: **1**
+     - ✅ Dismiss stale pull request approvals when new commits are pushed
+   - ✅ **Require status checks to pass before merging**
+     - ✅ Require branches to be up to date before merging
+     - In the search box, type and add:
+       - `Python Lint & Tests / Lint & Format`
+       - `Python Lint & Tests / Unit Tests`
+       - (Add other checks as your `Build.yml` defines them, e.g. `CDK Build & Synth`)
+   - ✅ **Do not allow bypassing the above settings**
+5. Click **Create** (or **Save changes**)
+
+**Note on status check names:** They must match exactly. The names are `<workflow-job-name> / <reusable-job-name>`. After your first PR runs, GitHub auto-suggests them in the dropdown — easier than typing.
+
+---
+
+## Part 6: First test run
+
+Now validate the full pipeline.
+
+### 6.1 Trigger the workflow
+
+```bash
+gh workflow run AutoMaintain.yml -R Answering-IT/<your-repo>
+```
+
+Or via UI: `https://github.com/Answering-IT/<your-repo>/actions/workflows/AutoMaintain.yml` → **Run workflow**.
+
+### 6.2 Watch it run
+
+```bash
+gh run list --workflow=AutoMaintain.yml -R Answering-IT/<your-repo> --limit 1
+gh run watch <RUN_ID> -R Answering-IT/<your-repo>
+```
+
+Expected duration: 1–3 minutes for a trivial item.
+
+### 6.3 Expected outcome
+
+- ✅ Job `Pick next backlog item` passes
+- ✅ Job `Implement with Claude` passes
+- A new PR appears at `https://github.com/Answering-IT/<your-repo>/pulls`
+- PR title: `auto(<item-id>): <item title>`
+- Branch name: `auto/<item-id>`
+- Labels: `automated` and `backlog-driven`
+- The PR triggers `Build.yml` automatically — wait for those checks too
+
+### 6.4 If something failed
+
+See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md). The most common issues for fresh onboardings are:
+
+| Symptom                                  | Cause                                      | Fix                                                       |
+|------------------------------------------|--------------------------------------------|-----------------------------------------------------------|
+| `appId option is required`               | Repo secrets not set                       | Part 2                                                    |
+| `not authorized to perform sts:Assume…`  | IAM trust policy doesn't include this repo | Part 7 (foundation), or contact platform team             |
+| `Resource not accessible by integration` | App not installed on this repo             | Part 3                                                    |
+| Auto-PR has no checks running            | Repo Actions setting disabled              | Part 4                                                    |
+| `No eligible backlog item found`         | No item with `status: ready`               | Edit `BACKLOG.md`                                         |
+| `Backlog file not found`                 | Old reusable workflow tag                  | Bump caller to `@v1.0.4` or later                         |
+
+---
+
+## Foundation setup (one-time per account)
+
+These are infrastructure things that should be set up once for the entire `Answering-IT` account, not per repo. If they're already done, skip this section.
+
+### F.1 Create the GitHub App
+
+1. Go to `https://github.com/settings/apps/new` (logged in as `Answering-IT`)
+2. **GitHub App name:** `answering-auto-maintain`
+3. **Homepage URL:** `https://github.com/Answering-IT/answering-automation-infra`
+4. **Webhook:** uncheck **Active** (we don't need webhooks)
+5. **Repository permissions:**
+   - Contents: **Read & write**
+   - Issues: **Read & write**
+   - Pull requests: **Read & write**
+   - Metadata: **Read**
+6. **Where can this GitHub App be installed?:** **Only on this account**
+7. Click **Create GitHub App**
+8. On the next page, scroll to **Private keys** → **Generate a private key** → save the `.pem` file
+9. Note the **App ID** at the top of the page
+
+### F.2 AWS IAM role trust policy
+
+The role `GitHubActions-Answering-IT-SharedRole` must trust GitHub OIDC for all repos in the account.
+
+```bash
+aws iam get-role \
+  --role-name GitHubActions-Answering-IT-SharedRole \
+  --query 'Role.AssumeRolePolicyDocument' \
+  --profile ans-super
+```
+
+The trust policy should include:
+
 ```json
-"token.actions.githubusercontent.com:sub": "repo:Answering-IT/*:*"
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::708819485463:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:Answering-IT/*:*"
+      },
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
 ```
 
-### Tests fail locally but not in CI
+If the wildcard `repo:Answering-IT/*:*` is missing, update with:
 
-**Cause:** Local env has different Python version or cached dependencies.
-
-**Fix:**
 ```bash
-# Reset local env
-deactivate
-rm -rf .venv
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-pip install -r requirements.txt  # or agents/requirements.txt
-
-# Re-run tests
-pytest -m "unit or smoke"
+aws iam update-assume-role-policy \
+  --role-name GitHubActions-Answering-IT-SharedRole \
+  --policy-document file://trust-policy.json \
+  --profile ans-super
 ```
 
----
+### F.3 AWS Bedrock model access
 
-## Next Steps
+Make sure cross-region inference profile `us.anthropic.claude-sonnet-4-6` is enabled in `us-east-1`.
 
-Once your first auto-opened PR merges successfully:
+```bash
+aws bedrock list-inference-profiles \
+  --region us-east-1 \
+  --profile ans-super \
+  --query 'inferenceProfileSummaries[?contains(inferenceProfileId, `claude-sonnet-4-6`)]'
+```
 
-1. **Add real backlog items**
-   - Edit `BACKLOG.md`
-   - Add items with `status: ready`
-   - Follow the [BACKLOG_FORMAT.md](BACKLOG_FORMAT.md) spec
-
-2. **Schedule regular runs (optional)**
-   - Edit `AutoMaintain.yml`
-   - Add a `schedule:` trigger:
-     ```yaml
-     on:
-       schedule:
-         - cron: '0 10 * * MON'  # Every Monday at 10am UTC
-       workflow_dispatch:
-         # ... existing inputs
-     ```
-
-3. **Customize quality gates**
-   - Adjust `pyproject.toml` for stricter rules
-   - Add more pytest markers
-   - Add security checks (e.g., bandit for Python)
-
-4. **Monitor costs**
-   - Review AWS billing for Bedrock usage
-   - Set CloudWatch budget alerts
-   - Use `dry_run: true` to test prompts without invoking Claude
+If empty, request access via the Bedrock console: Console → Bedrock → Model access → Manage model access → request `anthropic.claude-sonnet-4-6`.
 
 ---
 
-## Support
+## Per-repo onboarding checklist (printable)
 
-Questions or issues?
-- Open an issue in [answering-automation-infra](https://github.com/Answering-IT/answering-automation-infra/issues)
-- Contact platform team in Slack
+Use this for each new repo:
+
+- [ ] **Part 1.1** Copy `templates/python/*` into the repo
+- [ ] **Part 1.2** Create `.github/workflows/AutoMaintain.yml`
+- [ ] **Part 1.2** Create `.github/workflows/Build.yml`
+- [ ] **Part 1.3** Trial item with `status: ready` exists in `BACKLOG.md`
+- [ ] **Part 1.4** Setup PR opened, checks green, merged
+- [ ] **Part 2** `AUTO_MAINTAIN_APP_ID` repo secret set
+- [ ] **Part 2** `AUTO_MAINTAIN_APP_PRIVATE_KEY` repo secret set
+- [ ] **Part 3** GitHub App installed on this repo (or "All repositories")
+- [ ] **Part 4** Repo Actions setting allows creating PRs
+- [ ] **Part 5** Branch protection on `main` requires Build.yml checks
+- [ ] **Part 6** First Auto Maintain run produced a PR successfully
 
 ---
 
-**Last Updated:** 2026-06-04  
-**Template Version:** v1.0.0
+## Bumping to a newer reusable workflow version
+
+When this repo releases a new tag (e.g. `v1.0.5`):
+
+1. Read [CHANGELOG.md](../CHANGELOG.md) to see if the bump is needed.
+2. In each consumer repo, update `@v1.0.4` → `@v1.0.5` in `AutoMaintain.yml` and `Build.yml`.
+3. Open a PR with that change. Build.yml runs against the new tag and validates the bump.
+4. Merge once green.
+
+There is no auto-bump mechanism today. A small future improvement would be a script in `scripts/` that opens version-bump PRs across all consumer repos.

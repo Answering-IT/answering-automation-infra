@@ -1,267 +1,123 @@
 # Answering Automation Infrastructure
 
-Central repository for self-maintaining workflows across all Answering-IT repositories.
+Central repository for self-maintaining workflows across Answering-IT repos.
 
-## Overview
+## What this provides
 
-This repo provides reusable GitHub Actions workflows that enable repositories to:
-- Maintain a `BACKLOG.md` file with feature/task items
-- Automatically implement items using Claude Code (via AWS Bedrock)
-- Open PRs with quality gates enforced
+Reusable GitHub Actions workflows so any repo can:
 
-**Key principle:** Write once, use everywhere. Minimize duplication, maximize reusability.
+- Consume work items from GitHub Issues (created by documentation workflow) or `BACKLOG.md` files
+- Trigger Claude Code (via AWS Bedrock) to implement items end-to-end
+- Open PRs that go through the same quality gates as human-authored code
 
----
+**Key principle:** Write the workflow once, version it, consumers reference it by tag.
 
-## Architecture
-
-### Components
-
-1. **Reusable Workflows** (`.github/workflows/`)
-   - `auto-maintain-reusable.yml` - Core auto-implementation workflow
-   - `build-python-reusable.yml` - Python quality gates
-   - `build-typescript-reusable.yml` - TypeScript quality gates
-   - `build-go-reusable.yml` - Go quality gates
-
-2. **Shared Scripts** (`scripts/`)
-   - `parse_backlog.py` - BACKLOG.md parser (validates, selects next item)
-
-3. **Templates** (`templates/`)
-   - Language-specific starter packs (pyproject.toml, BACKLOG.md, etc.)
-   - Copy to new repo during onboarding
-
-4. **Documentation** (`docs/`)
-   - Onboarding guide
-   - BACKLOG format specification
-   - Troubleshooting
+**Two modes:**
+- **GitHub Issues mode** (recommended): Issues are created by the central documentation repo, grouped by milestone, automatically formatted
+- **BACKLOG.md mode** (legacy): Manual maintenance of BACKLOG.md in each consumer repo
 
 ---
 
-## Quick Start
+## Repo layout
 
-### Add Auto-Maintain to Your Repo (5 steps, ~15 min)
+```
+.github/workflows/
+├── auto-maintain-reusable.yml      # Picks work item → invokes Claude → opens PR
+└── build-python-reusable.yml       # Python lint/test gates (ruff, black, pytest)
 
-#### Step 1: Copy template for your stack
+scripts/
+├── parse_backlog.py                # Parses BACKLOG.md (validates, picks --next)
+└── parse_github_issues.py          # Queries GitHub Issues (validates, picks --next)
+
+templates/
+└── python/                         # Starter pack: pyproject.toml, BACKLOG.md, etc.
+
+docs/
+├── ONBOARDING.md                   # Add auto-maintain to a new repo
+├── BACKLOG_FORMAT.md               # Schema for backlog items (BACKLOG.md mode)
+├── github-issues-integration.md    # GitHub Issues mode (recommended)
+└── TROUBLESHOOTING.md              # Common failures and fixes
+```
+
+---
+
+## Quick start (for a new consumer repo)
+
+1. Read [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — full step-by-step including manual GitHub config.
+2. Copy `templates/python/*` to your repo.
+3. Add `.github/workflows/AutoMaintain.yml` and `.github/workflows/Build.yml` (slim callers — see ONBOARDING).
+4. Configure repository secrets `AUTO_MAINTAIN_APP_ID` and `AUTO_MAINTAIN_APP_PRIVATE_KEY` (see ONBOARDING for exact values).
+5. Trigger `Auto Maintain` from the Actions tab.
+
+---
+
+## Versioning
+
+| Tag      | What it points to                                                |
+|----------|------------------------------------------------------------------|
+| `v1.0.4` | Latest stable (current)                                          |
+| `v1`     | Floating tag — always points to the latest `v1.x.x`              |
+
+Consumers should pin to a specific minor (`@v1.0.4`) and bump deliberately. The `@v1` floating tag exists for prototyping only.
+
+### Release process
 
 ```bash
-# From answering-automation-infra root
-cp -r templates/python/* /path/to/your-repo/
-# or templates/typescript/ or templates/go/
+# After merging changes to main:
+git tag -a vX.Y.Z -m "vX.Y.Z: <one-liner>"
+git tag -d v1                              # delete old floating
+git tag -a v1 -m "v1: latest stable v1.x"
+git push origin vX.Y.Z
+git push origin v1 --force
 ```
 
-#### Step 2: Create caller workflow
-
-Create `.github/workflows/AutoMaintain.yml` in your repo:
-
-```yaml
-name: Auto Maintain
-on:
-  workflow_dispatch:
-    inputs:
-      backlog_id:
-        description: 'Override item ID (leave blank for --next)'
-        required: false
-      dry_run:
-        description: 'Print prompt without invoking Claude'
-        type: boolean
-        default: false
-
-permissions:
-  id-token: write       # AWS OIDC
-  contents: write       # commit + push
-  pull-requests: write  # open PR
-
-jobs:
-  run:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.0
-    with:
-      backlog_id: ${{ inputs.backlog_id }}
-      dry_run: ${{ inputs.dry_run }}
-      language: python    # python | typescript | go
-      bedrock_model: us.anthropic.claude-sonnet-4-6
-    secrets:
-      AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
-      AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
-```
-
-#### Step 3: Create gates workflow
-
-Create `.github/workflows/Build.yml`:
-
-```yaml
-name: Build & Gates
-on:
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'agents/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - 'BACKLOG.md'
-
-jobs:
-  gates:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/build-python-reusable.yml@v1.0.0
-```
-
-#### Step 4: Add branch protection
-
-Create `.github/settings.yml` (requires Probot Settings app):
-
-```yaml
-repository:
-  name: your-repo
-  description: Your repo description
-  
-branches:
-  - name: main
-    protection:
-      required_pull_request_reviews:
-        required_approving_review_count: 1
-      required_status_checks:
-        strict: true
-        contexts:
-          - "Lint & Format"
-          - "Unit Tests"
-      enforce_admins: false
-```
-
-#### Step 5: Add first backlog item
-
-Edit `BACKLOG.md` (copied from template), add a trial item with `status: ready`.
-
-Trigger manually: Actions → Auto Maintain → Run workflow
+Then bump consumer repos: edit their `AutoMaintain.yml` and `Build.yml` to reference the new tag.
 
 ---
 
-## Prerequisites
+## Important: this is NOT a GitHub Organization
 
-### Organization-Level Setup (One-Time)
+`Answering-IT` is a **User account**, not an Organization. This means:
 
-#### 1. GitHub App
+- ❌ No organization-level secrets (the `/organizations/Answering-IT/settings/...` URLs do not exist)
+- ❌ No organization-level `gh` CLI commands work
+- ✅ Each consumer repo must have its own copies of `AUTO_MAINTAIN_APP_ID` and `AUTO_MAINTAIN_APP_PRIVATE_KEY` as **repository secrets**
 
-Install `answering-auto-maintain` (App ID: 3964884) org-wide:
-- Settings → Developer settings → GitHub Apps → answering-auto-maintain
-- Install App → Answering-IT → All repositories
+Onboarding a new repo therefore requires setting two secrets per repo. See `docs/ONBOARDING.md` for the exact commands.
 
-Store secrets at org level:
-- `AUTO_MAINTAIN_APP_ID` = `3964884`
-- `AUTO_MAINTAIN_APP_PRIVATE_KEY` = (private key from app)
-
-#### 2. AWS IAM Role
-
-Ensure `GitHubActions-Answering-IT-SharedRole` trust policy allows all org repos:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::708819485463:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:Answering-IT/*:*"
-        }
-      }
-    }
-  ]
-}
-```
-
-Role ARN: `arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole`
-
-#### 3. GitHub Actions Permissions
-
-Organization Settings → Actions → General:
-- ✅ Allow GitHub Actions to create and approve pull requests
+If you ever convert `Answering-IT` to an Organization, you can move these to org-level secrets and remove the per-repo duplication. Until then, keep using repo-level secrets.
 
 ---
 
-## Supported Stacks
+## Current status
 
-| Language   | Linter/Formatter | Test Framework | Template |
-|------------|------------------|----------------|----------|
-| Python     | ruff + black     | pytest         | `templates/python/` |
-| TypeScript | eslint + prettier | vitest        | `templates/typescript/` |
-| Go         | golangci-lint    | go test        | `templates/go/` |
-
----
-
-## Maintenance
-
-### Update Reusable Workflow
-
-1. Edit workflow in this repo
-2. Tag new version: `git tag v1.1.0 && git push --tags`
-3. Update consumer repos: bump `@v1.0.0` → `@v1.1.0` in their caller workflows
-
-### Update Parser
-
-1. Edit `scripts/parse_backlog.py`
-2. Tag new version
-3. Consumers automatically fetch latest via raw URL
-
-### Update Templates
-
-1. Edit templates (e.g., `templates/python/pyproject.toml`)
-2. Tag new version
-3. Consumer repos are NOT auto-updated (templates are point-in-time)
-4. Optional: Add backlog item to each repo: "Update tooling to v1.x.x standard"
+| Repo                                | Status     | Notes                                  |
+|-------------------------------------|------------|----------------------------------------|
+| `external-ingester-consumer-lambda` | ✅ Live    | Pilot — first PR opened by Claude #19  |
+| `kb-rag-agent`                      | 🚧 Migrating | Moving from inline workflow to reusable |
+| Other Python repos                  | 📋 Planned | After kb-rag-agent stabilizes          |
 
 ---
 
-## Versioning Strategy
+## Architecture decisions worth knowing
 
-- `v1.x.x` - Backward-compatible changes (repos inherit automatically)
-- `v2.x.x` - Breaking changes (repos must update manually)
-- Test in 1-2 pilot repos before tagging major versions
+**Why GitHub App (not `GITHUB_TOKEN`) for opening PRs?**
+PRs opened with the default `GITHUB_TOKEN` do not trigger downstream workflows like `Build.yml`. Using a GitHub App identity dispatches them normally, so the same gates a human PR would face apply to Claude's PR.
 
----
+**Why reusable workflows (not a custom action)?**
+Reusable workflows can declare `secrets:` and full `permissions:` blocks, which custom actions can't. They also live as YAML, which is easier to diff than a packaged action.
 
-## Cost Estimation
+**Why download `parse_backlog.py` per run instead of vendoring it?**
+Consumers stay zero-maintenance: parser fixes take effect on the next run without any consumer-side bump. The download URL is pinned to `main` of this repo (intentional — pinning to a tag was the source of the v1.0.0→v1.0.1 bug).
 
-**Per repo per month:**
-- 1 execution/day × 30 days ≈ $15-20
-- On-demand only (no cron) ≈ $5-10
-
-**Organization-wide:**
-- 10 repos × $10/month = $100/month
-- 50 repos × $10/month = $500/month
-
-**Mitigation:**
-- Only run when items have `status: ready`
-- Use `dry_run: true` to validate prompts without invoking Claude
-- AWS Budget alerts at org level
-
----
-
-## Rollout Status
-
-| Phase | Repos | Status |
-|-------|-------|--------|
-| Fase 0: Setup | answering-automation-infra | ✅ Done |
-| Fase 1: Pilot | kb-rag-agent + 2 more | 🚧 In Progress |
-| Fase 2: Python | ~10 Python repos | 📋 Planned |
-| Fase 3: Multi-stack | TypeScript, Go repos | 📋 Planned |
-| Fase 4: Org-wide | All repos | 📋 Planned |
+**Why pytest exit code 5 = success?**
+Projects adopting the workflow shouldn't need to backfill `@pytest.mark.unit`/`smoke` across their existing suite before they can use the gate. Exit code 5 means "no tests collected" — we treat that as a clean pass with a notice. Exit code 2 (real collection error) still fails the build.
 
 ---
 
 ## Documentation
 
-- [Onboarding Guide](docs/ONBOARDING.md) - Step-by-step with screenshots
-- [BACKLOG Format](docs/BACKLOG_FORMAT.md) - Schema specification
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and fixes
-
----
-
-## Support
-
-Issues? Open an issue in this repo or contact the platform team.
-
-**Last Updated:** 2026-06-04  
-**Version:** v1.0.0
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — Add auto-maintain to a new repo, with all manual GitHub steps
+- [`docs/BACKLOG_FORMAT.md`](docs/BACKLOG_FORMAT.md) — Schema for `BACKLOG.md` items
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — Common failures and fixes
+- [`CHANGELOG.md`](CHANGELOG.md) — Version history

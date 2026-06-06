@@ -1,0 +1,86 @@
+# Example consumer workflow using GitHub Issues mode
+#
+# Save this as .github/workflows/auto-maintain.yml in your consumer repo
+# (e.g., kb-rag-agent-fe, jariapp-backend, etc.)
+
+name: Auto Maintain
+
+on:
+  schedule:
+    # Run every 6 hours (adjust as needed)
+    - cron: '0 */6 * * *'
+
+  workflow_dispatch:
+    inputs:
+      milestone:
+        description: 'Filter by milestone title (leave empty for all)'
+        required: false
+        type: string
+      issue_label:
+        description: 'Filter by label (e.g., feature, backend, frontend)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Show what would be picked without implementing'
+        required: false
+        type: boolean
+        default: false
+      backlog_id:
+        description: 'Specific item ID to implement (overrides selection)'
+        required: false
+        type: string
+
+jobs:
+  auto-maintain:
+    name: Implement next issue
+    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@main
+    with:
+      # GitHub Issues mode (recommended)
+      use_github_issues: true
+
+      # Filter options (optional)
+      milestone: ${{ inputs.milestone }}
+      issue_label: ${{ inputs.issue_label }}
+
+      # Override selection (optional)
+      backlog_id: ${{ inputs.backlog_id }}
+
+      # Dry run mode (optional)
+      dry_run: ${{ inputs.dry_run }}
+
+      # Language/stack for this repo
+      language: typescript  # or: python, go
+
+      # AWS/Bedrock settings (use defaults)
+      bedrock_model: us.anthropic.claude-sonnet-4-6
+      aws_region: us-east-1
+      aws_role_arn: arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole
+
+    secrets:
+      # These must be set as repository secrets
+      AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
+      AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
+
+# How to use:
+#
+# 1. Create issues via documentation workflow:
+#    - Go to Answering-IT/documentation
+#    - Run "Generate Backlog from Feature Spec"
+#    - Issues are created in your repo with milestone + labels
+#
+# 2. Test manually:
+#    - Actions tab → Auto Maintain → Run workflow
+#    - Enable "dry_run" to see what would be picked
+#    - Optionally filter by milestone or label
+#
+# 3. Enable scheduled runs:
+#    - Uncomment the schedule section above
+#    - Workflow runs automatically every 6 hours
+#    - Picks next P0 issue, implements, opens PR
+#
+# 4. Monitor:
+#    - Check Actions tab for workflow status
+#    - Review automated PRs (branch: auto/issue-*)
+#    - Merge when ready (or request changes)
+#
+# See docs/github-issues-integration.md for more details

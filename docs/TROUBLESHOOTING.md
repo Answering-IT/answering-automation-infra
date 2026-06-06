@@ -1,555 +1,293 @@
 # Troubleshooting
 
-Common issues and solutions when using the auto-maintain workflow.
+Common failures and their fixes. Issues are grouped by where in the pipeline they appear.
 
 ---
 
-## Workflow Issues
+## Pick item step fails
 
-### No eligible backlog item found
+### `Backlog file not found: /home/runner/work/<repo>/BACKLOG.md`
 
-**Symptoms:**
-- Workflow completes in <1 minute
-- Log shows: "No eligible backlog item found."
-- No PR opened
+**Cause:** Caller workflow is pinned to an old tag (`@v1.0.0` or `@v1.0.1`) of the reusable workflow. Those versions had a bug in `parse_backlog.py` where `Path(__file__).parents[1]` resolved to the wrong directory in CI.
 
-**Causes:**
-1. No items in BACKLOG.md have `status: ready`
-2. All ready items already have open PRs with label `automated`
-3. BACKLOG.md is malformed (parser fails silently)
+**Fix:** Bump the caller in `AutoMaintain.yml` and `Build.yml` to `@v1.0.4` or newer:
 
-**Fixes:**
+```yaml
+uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.4
+```
 
-**Check 1: Validate BACKLOG.md locally**
+### `No eligible backlog item found`
+
+**Cause:** No item in `BACKLOG.md` has `status: ready`, OR all ready items already have an open PR with label `automated`.
+
+**Fix:**
+
 ```bash
-# Download parser
-curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v1.0.0/scripts/parse_backlog.py -o parse_backlog.py
+# What's in the backlog?
+gh pr list --label automated --state open
 
 # Validate format
-python parse_backlog.py --validate
+curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_backlog.py -o /tmp/parse_backlog.py
+python /tmp/parse_backlog.py --validate
 
-# See what would be picked
-python parse_backlog.py --next
+# What would be picked next?
+python /tmp/parse_backlog.py --next
 ```
 
-**Check 2: Look for open automated PRs**
+If the parser shows `null`, no item is eligible. Edit `BACKLOG.md` to set at least one item to `status: ready`.
+
+### YAML parse errors
+
+**Cause:** Common mistakes in `BACKLOG.md`:
+- Tabs instead of spaces
+- Missing colon after a field name
+- Unescaped colons in unquoted strings (e.g. `context: Fix: the bug`)
+
+**Fix:** Run the validator locally to see line numbers:
+
 ```bash
-gh pr list --label automated --state open
+python /tmp/parse_backlog.py --validate
 ```
 
-**Check 3: Edit BACKLOG.md**
-- Ensure at least one item has `status: ready`
-- Check YAML syntax (no tabs, proper indentation)
+Quote strings that contain colons or use the `>` block style:
 
----
-
-### Parser fails with "Invalid YAML"
-
-**Symptoms:**
-- Workflow fails in "Pick item" step
-- Error mentions YAML parsing
-
-**Causes:**
-- Indentation uses tabs instead of spaces
-- Missing colon after field name
-- Unescaped special characters in strings
-
-**Fixes:**
-
-**Use the validator:**
-```bash
-python parse_backlog.py --validate
-# Shows line numbers with errors
-```
-
-**Common mistakes:**
 ```yaml
-# ❌ WRONG - tabs instead of spaces
-	status: ready
-
-# ✅ CORRECT - spaces
-  status: ready
-
-# ❌ WRONG - missing colon
-status ready
-
-# ✅ CORRECT
-status: ready
-
-# ❌ WRONG - unescaped colon in string
+# WRONG
 context: Fix: the bug
 
-# ✅ CORRECT - quoted or use >
+# OK
 context: "Fix: the bug"
-# or
+
+# OK
 context: >
   Fix: the bug
 ```
 
 ---
 
-### Claude invocation times out
+## Implement with Claude job fails
 
-**Symptoms:**
-- Workflow runs for 30 minutes then fails
-- Last step shows "timeout"
+### `[@octokit/auth-app] appId option is required`
 
-**Causes:**
-- Item is too complex (requires > 40 turns)
-- Claude is stuck in a loop (tests failing repeatedly)
-- External dependency unavailable (pip/npm registry down)
+**Cause:** Repository secrets `AUTO_MAINTAIN_APP_ID` and/or `AUTO_MAINTAIN_APP_PRIVATE_KEY` are not set on the consumer repo.
 
-**Fixes:**
+**Fix:** Set them per [`ONBOARDING.md` Part 2](ONBOARDING.md#part-2-repository-secrets-manual-github-ui-or-cli). Verify:
 
-**1. Run dry-run first to validate prompt:**
 ```bash
-gh workflow run AutoMaintain.yml -f dry_run=true
-# Check logs for prompt quality
+gh secret list -R Answering-IT/<your-repo>
 ```
 
-**2. Reduce item scope:**
-- Split large items into smaller ones
-- Make acceptance criteria more specific
-- Pre-create files that Claude should edit (easier than creating from scratch)
+Both names must appear. Note: `Answering-IT` is a User account, not an Organization, so secrets must be at repo level — there's no org-level inheritance.
 
-**3. Override timeout (edit your AutoMaintain.yml caller):**
-```yaml
-jobs:
-  run:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.0
-    timeout-minutes: 60  # Increase from default 30
-```
+### `Not authorized to perform: sts:AssumeRoleWithWebIdentity`
 
----
-
-### Permission denied when invoking Claude
-
-**Symptoms:**
-- Workflow fails at "Run Claude Code (Bedrock)" step
-- Error: "permission_denials_count: X"
-
-**Causes:**
-- `--allowedTools` list too restrictive
-- New tool needed but not in allowed list
-
-**Fixes:**
-
-**Check claude-code-action logs:**
-- Look for which tools were denied
-- Add to `claude_args: --allowedTools` in `auto-maintain-reusable.yml`
-
-**Example addition:**
-```yaml
-claude_args: |
-  --allowedTools "Read,Write,...,Bash(your-new-command:*)"
-```
-
-**Then tag new version and update callers:**
-```bash
-cd answering-automation-infra
-git add .github/workflows/auto-maintain-reusable.yml
-git commit -m "feat: allow new tool"
-git tag v1.1.0
-git push --tags
-```
-
----
-
-## PR Issues
-
-### Auto-opened PR doesn't trigger Build.yml
-
-**Symptoms:**
-- PR opened successfully
-- No checks run
-- PR shows "No checks have run"
-
-**Causes:**
-1. Org setting disabled
-2. Using `GITHUB_TOKEN` instead of GitHub App token
-3. Build.yml path filters exclude changed files
-
-**Fixes:**
-
-**Check 1: Org setting**
-```
-Settings → Actions → General
-✅ "Allow GitHub Actions to create and approve pull requests"
-```
-
-**Check 2: GitHub App token configured**
-In `AutoMaintain.yml` caller:
-```yaml
-secrets:
-  AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
-  AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
-```
-
-Verify secrets exist:
-```bash
-gh secret list
-# Should show AUTO_MAINTAIN_APP_ID and AUTO_MAINTAIN_APP_PRIVATE_KEY
-```
-
-**Check 3: Path filters**
-In `Build.yml`, ensure paths cover files Claude changed:
-```yaml
-on:
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - '**/*.py'  # Add broad patterns if needed
-```
-
----
-
-### Build.yml checks fail on auto-opened PR
-
-**Symptoms:**
-- PR opened
-- Checks run but fail
-- Linter or tests report errors
-
-**Causes:**
-- Claude generated code doesn't pass gates
-- Env mismatch (different Python/Node version)
-- Missing dependencies
-
-**Fixes:**
-
-**1. Review PR changes:**
-```bash
-gh pr checkout <PR-number>
-# Run gates locally
-ruff check .
-black --check .
-pytest -m "unit or smoke"
-```
-
-**2. Add fixes to the PR:**
-```bash
-# Make fixes
-git add .
-git commit -m "fix: address gate failures"
-git push
-```
-
-**3. Close PR and re-run with better prompt:**
-If fixes are too complex, close PR and improve the backlog item:
-- Add more context
-- Specify edge cases to avoid
-- Reference similar existing code
-
----
-
-### PR has wrong branch name
-
-**Symptoms:**
-- Expected: `auto/item-id`
-- Actual: Something else
-
-**Cause:**
-- `claude-code-action` branch_prefix misconfigured
+**Cause:** The IAM role `GitHubActions-Answering-IT-SharedRole` doesn't trust this repo, or doesn't have the wildcard pattern.
 
 **Fix:**
-In `auto-maintain-reusable.yml`:
-```yaml
-- name: Run Claude Code (Bedrock)
-  uses: anthropics/claude-code-action@v1
-  with:
-    branch_prefix: 'auto/'  # Must match
-```
 
----
-
-## AWS/Bedrock Issues
-
-### Role not authorized to assume
-
-**Symptoms:**
-- Workflow fails at "Configure AWS credentials (OIDC)"
-- Error: "Not authorized to perform: sts:AssumeRoleWithWebIdentity"
-
-**Causes:**
-- IAM role trust policy doesn't include this repo
-- Role ARN incorrect
-
-**Fixes:**
-
-**Check trust policy:**
 ```bash
-aws iam get-role --role-name GitHubActions-Answering-IT-SharedRole \
+aws iam get-role \
+  --role-name GitHubActions-Answering-IT-SharedRole \
   --query 'Role.AssumeRolePolicyDocument' \
   --profile ans-super
 ```
 
-**Should contain:**
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::708819485463:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:Answering-IT/*:*"
-        }
-      }
-    }
-  ]
-}
-```
+The condition should include `"repo:Answering-IT/*:*"`. If it lists specific repos instead, ask the platform team to update the trust policy. See [`ONBOARDING.md` Part F.2](ONBOARDING.md#f2-aws-iam-role-trust-policy).
 
-**If missing wildcard, update policy:**
-```bash
-# Save policy to file, edit, then:
-aws iam update-assume-role-policy \
-  --role-name GitHubActions-Answering-IT-SharedRole \
-  --policy-document file://trust-policy.json \
-  --profile ans-super
-```
+### `Resource not accessible by integration`
 
----
+**Cause:** The GitHub App `answering-auto-maintain` is not installed on this repo, or has insufficient permissions.
 
-### Bedrock throttling errors
+**Fix:** See [`ONBOARDING.md` Part 3](ONBOARDING.md#part-3-github-app-installation-manual-github-ui).
 
-**Symptoms:**
-- Error: "ThrottlingException"
-- Error: "Rate exceeded"
+### Claude runs but exits without opening a PR
 
-**Causes:**
-- Too many concurrent invocations
-- Model quota reached
-
-**Fixes:**
-
-**1. Check current quotas:**
-```bash
-aws service-quotas list-service-quotas \
-  --service-code bedrock \
-  --region us-east-1 \
-  --profile ans-super
-```
-
-**2. Request quota increase:**
-- Console → Service Quotas → AWS Bedrock
-- Find "Invocations per minute"
-- Request increase
-
-**3. Add retry logic (advanced):**
-Edit `auto-maintain-reusable.yml` to add exponential backoff (future enhancement).
-
----
-
-### Wrong model invoked
-
-**Symptoms:**
-- Logs show different model than expected
-- Costs higher than expected
-
-**Cause:**
-- `bedrock_model` input incorrect
+**Cause:** Most often, Claude's gates (`ruff`, `black`, `pytest`) failed and it correctly stopped instead of pushing broken code, OR the changes Claude made don't match the path filters in `Build.yml` so no checks run.
 
 **Fix:**
-In your repo's `AutoMaintain.yml` caller:
+1. Check the workflow run's `Run Claude Code (Bedrock)` step — Claude logs why it stopped.
+2. If gates failed, the backlog item is likely too ambitious. Make it more specific or break it up.
+3. If checks aren't running on the auto-PR, broaden `Build.yml` path filters to match what Claude touches.
+
+### Claude times out (30 min default)
+
+**Cause:** Item too complex, or Claude stuck in a loop (tests failing, retries indefinitely).
+
+**Fix:**
+1. Run with `dry_run: true` to inspect the prompt without invoking Claude:
+   ```bash
+   gh workflow run AutoMaintain.yml -f dry_run=true
+   ```
+2. If the prompt looks right but the item is genuinely complex, split it into smaller backlog items.
+3. As a last resort, increase timeout in your caller:
+   ```yaml
+   jobs:
+     run:
+       uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.4
+       timeout-minutes: 60
+   ```
+
+---
+
+## Auto-PR opens but no checks run
+
+### `Build.yml` doesn't trigger on the auto-PR
+
+**Cause:** One of:
+1. Repo setting **Allow GitHub Actions to create and approve pull requests** is disabled
+2. The workflow is using `GITHUB_TOKEN` instead of the GitHub App token (PRs from `GITHUB_TOKEN` don't dispatch downstream workflows — this is GitHub's anti-loop protection)
+3. `Build.yml` path filters don't match the files Claude changed
+
+**Fix:**
+
+1. Repo settings → Actions → General → Workflow permissions → ✅ **Allow GitHub Actions to create and approve pull requests**. See [`ONBOARDING.md` Part 4](ONBOARDING.md#part-4-github-actions-setting-manual-github-ui-repo-level).
+
+2. Verify `AutoMaintain.yml` passes both secrets to the reusable workflow:
+   ```yaml
+   secrets:
+     AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
+     AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
+   ```
+
+3. Broaden path filters or remove them entirely while debugging:
+   ```yaml
+   on:
+     pull_request:
+       branches: [main]
+   ```
+
+---
+
+## Build.yml gate failures
+
+### `pytest` fails with exit code 5 — and it shouldn't
+
+If you're on `@v1.0.3` or older, exit code 5 (no tests collected) is treated as a failure. It's been fixed in `@v1.0.4`. Bump.
+
+### `pytest` fails with exit code 2 — collection error
+
+**Cause:** Test files import a module that isn't installed. Most common: `moto`, `boto3`, or another runtime/dev dep missing from `requirements-dev.txt` and not in any auto-discovered location.
+
+**Fix:** Add the missing package to `requirements-dev.txt`. The reusable workflow auto-installs from:
+- `requirements-dev.txt`
+- `requirements.txt` (if present)
+- `agents/requirements.txt` (if present)
+- `infrastructure/lambdas/*/requirements.txt` (CDK Lambda pattern)
+
+If your project has a different layout, you may need to add a custom install step in your repo's `Build.yml` instead of relying on the reusable workflow alone.
+
+### `ruff check .` fails with rules you don't care about
+
+**Cause:** The template `pyproject.toml` enables a pragmatic ruleset (`E,F,W,I` only). If you've inherited a stricter ruleset from somewhere else (`N,UP,B,SIM,C4,A`), it may flag a lot of style preferences.
+
+**Fix:** Decide deliberately. Either:
+1. Fix the violations (Claude can do this — make a backlog item).
+2. Relax the ruleset by editing your repo's `pyproject.toml`:
+   ```toml
+   [tool.ruff.lint]
+   select = ["E", "F", "W", "I"]
+   ```
+3. Add per-file ignores for legitimate cases (e.g. boto3 mock signatures use PascalCase):
+   ```toml
+   [tool.ruff.lint.per-file-ignores]
+   "tests/**/*.py" = ["N803", "N806"]
+   ```
+
+### `black --check .` fails
+
+**Fix:** Run `black .` locally and commit. Or let Claude do it as a backlog item: `acceptance_criteria: ["black --check . passes"]`.
+
+---
+
+## Repo-specific environment issues
+
+### `Answering-IT` is not an Organization
+
+`https://github.com/organizations/Answering-IT/settings/...` URLs return 404 or "page not found".
+
+**Cause:** `Answering-IT` is a User account. Organization-only features (org secrets, teams, audit logs) don't apply.
+
+**Implications:**
+- Each consumer repo needs its own copies of `AUTO_MAINTAIN_APP_ID` and `AUTO_MAINTAIN_APP_PRIVATE_KEY`
+- There's no `gh secret set --org` equivalent — only `--repo`
+- If you want true central management, the User account would have to be converted to an Organization (irreversible)
+
+This is documented in [README.md](../README.md#important-this-is-not-a-github-organization).
+
+### Build.yml works but the auto-PR's Build.yml doesn't run
+
+This is the same issue as [Auto-PR opens but no checks run](#auto-pr-opens-but-no-checks-run) — see that section.
+
+---
+
+## Versioning and updates
+
+### I bumped the central workflow but consumers still use the old behavior
+
+**Cause:** Consumers pin to an explicit version tag, e.g. `@v1.0.3`. Editing the workflow in this repo's main doesn't affect them until they explicitly bump the reference.
+
+**Fix:** In each consumer repo's `AutoMaintain.yml` and `Build.yml`, update the tag:
+
 ```yaml
-with:
-  bedrock_model: us.anthropic.claude-sonnet-4-6  # Verify this
+uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.5
 ```
 
-**Valid model IDs:**
-- `us.anthropic.claude-sonnet-4-6` (cross-region inference profile)
-- `anthropic.claude-sonnet-4-6` (single-region)
-- `anthropic.claude-opus-4-7` (more expensive, more capable)
+Open a PR with that change in the consumer; the PR itself validates the bump.
+
+The `@v1` floating tag exists but is **not recommended for production use** — pinning to a specific version makes upgrades deliberate and auditable.
+
+### I updated `parse_backlog.py` but consumers still use the old version
+
+**Cause:** Wait — did you update both the parser **and** the URL it's downloaded from?
+
+The reusable workflow downloads the parser at runtime from:
+```
+https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/main/scripts/parse_backlog.py
+```
+
+Pinned to `main`, deliberately, so parser fixes propagate without needing to bump the workflow tag. If you tagged the parser inside a workflow tag instead, that's an older bug — make sure your workflow uses `main` for the parser URL.
 
 ---
 
-## Local Testing Issues
-
-### parse_backlog.py not found
-
-**Cause:**
-- Parser not downloaded yet
-
-**Fix:**
-```bash
-curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v1.0.0/scripts/parse_backlog.py -o parse_backlog.py
-pip install pyyaml
-python parse_backlog.py --validate
-```
-
----
-
-### Tests pass locally but fail in CI
-
-**Causes:**
-- Different Python/Node version
-- Cached dependencies locally
-- Absolute paths in test fixtures
-
-**Fixes:**
-
-**Check 1: Version mismatch**
-```bash
-# CI uses .python-version file
-cat .python-version  # Should be 3.11
-python --version     # Local should match
-```
-
-**Check 2: Reset local env**
-```bash
-deactivate
-rm -rf .venv
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-pip install -r requirements.txt
-pytest -m "unit or smoke"
-```
-
-**Check 3: Absolute paths**
-```python
-# ❌ WRONG
-def test_load_file():
-    data = load("/Users/me/project/data.json")
-
-# ✅ CORRECT - relative to repo root
-def test_load_file(tmp_path):
-    data_file = tmp_path / "data.json"
-    data_file.write_text('{"key": "value"}')
-    data = load(data_file)
-```
-
----
-
-## Cost Issues
+## Cost surprises
 
 ### Bedrock costs higher than expected
 
-**Symptoms:**
-- AWS bill shows high Bedrock charges
-- Multiple items implemented in one day
-
-**Causes:**
-- Too many automatic runs (if cron enabled)
-- Items too complex (require many turns)
-- No budget alerts configured
-
-**Fixes:**
-
-**1. Disable cron, use workflow_dispatch only:**
-```yaml
-on:
-  # Remove schedule block
-  workflow_dispatch:
-    # ... keep inputs
-```
-
-**2. Use dry-run first:**
-```bash
-gh workflow run AutoMaintain.yml -f dry_run=true
-# Review prompt, then run for real
-```
-
-**3. Set AWS budget alert:**
-```bash
-# CloudWatch → Billing → Create budget
-# Alert when Bedrock costs > $X/month
-```
-
-**4. Review item complexity:**
-- Simplify acceptance criteria
-- Pre-create stub files
-- Split large items into smaller ones
-
----
-
-## Updating Central Repo
-
-### New workflow version doesn't apply
-
-**Symptoms:**
-- Updated `auto-maintain-reusable.yml` in central repo
-- Consumer repos still use old behavior
-
-**Cause:**
-- Caller workflows pinned to old tag (`@v1.0.0`)
+**Cause:** Either too many runs, or items too complex.
 
 **Fix:**
+- Don't enable a `schedule:` trigger until you've validated your backlog quality with manual runs
+- Use `dry_run: true` to test prompt quality without paying for inference
+- Review logs of completed runs — `--max-turns 40` is the cap; if Claude is consistently hitting it, the items are too big
+- Set an AWS Budget alert: Console → Billing → Budgets → Create budget for Bedrock service
 
-**1. Tag new version in central repo:**
+---
+
+## When all else fails
+
+1. Check the workflow run logs end-to-end. The actual error is usually in the last step that ran, not the step that says "completed with exit code N".
+2. Compare against `external-ingester-consumer-lambda` — that's the reference working pilot. If something works there but not in your repo, the difference is the bug.
+3. Open an issue in `Answering-IT/answering-automation-infra` with:
+   - The failing run URL
+   - The relevant `BACKLOG.md` item (if applicable)
+   - What you've already tried
+
+---
+
+## Useful one-liners
+
 ```bash
-cd answering-automation-infra
-git tag v1.1.0
-git push --tags
+# What version is each consumer using?
+for repo in external-ingester-consumer-lambda kb-rag-agent; do
+  echo "=== $repo ==="
+  gh api "/repos/Answering-IT/$repo/contents/.github/workflows/AutoMaintain.yml" --jq '.content' | base64 -d | grep "uses:"
+done
+
+# Watch the latest AutoMaintain run live
+gh run watch $(gh run list --workflow=AutoMaintain.yml --limit 1 --json databaseId --jq '.[0].databaseId') -R Answering-IT/<repo>
+
+# List all open auto-opened PRs across repos
+for repo in external-ingester-consumer-lambda kb-rag-agent; do
+  gh pr list --label automated --state open -R "Answering-IT/$repo"
+done
 ```
-
-**2. Update caller in each consumer repo:**
-```yaml
-jobs:
-  run:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.1.0
-    #                                                                                           ^^^^^^^ bump
-```
-
-**3. Automate bump (future):**
-Script to open PRs across all repos updating the tag.
-
----
-
-### Parser changes break consumer repos
-
-**Symptoms:**
-- Parser updated in central repo
-- Consumer workflows fail with "AttributeError"
-
-**Cause:**
-- Breaking change in parser API
-
-**Fix:**
-
-**Use semantic versioning:**
-- `v1.x.x` - Backward-compatible (safe to bump)
-- `v2.x.x` - Breaking change (requires consumer update)
-
-**Consumer repos fetch via URL with version:**
-```bash
-curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v1.1.0/scripts/parse_backlog.py -o parse_backlog.py
-#                                                                             ^^^^^^^ pin version
-```
-
-**Update URL in `auto-maintain-reusable.yml`:**
-```yaml
-- name: Download parser from central repo
-  run: |
-    curl -sSL https://raw.githubusercontent.com/Answering-IT/answering-automation-infra/v2.0.0/scripts/parse_backlog.py -o parse_backlog.py
-```
-
-Then bump tag and update all callers.
-
----
-
-## Getting Help
-
-If none of these solutions work:
-
-1. **Check central repo issues:**
-   https://github.com/Answering-IT/answering-automation-infra/issues
-
-2. **Open a new issue:**
-   - Title: Brief description
-   - Include: Workflow run URL, error message, BACKLOG.md item
-   - Tag: `help-wanted`
-
-3. **Contact platform team:**
-   - Slack: #platform-support
-
----
-
-**Last Updated:** 2026-06-04  
-**Version:** v1.0.0
