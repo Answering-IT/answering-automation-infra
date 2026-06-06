@@ -26,7 +26,6 @@ import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
-from typing import Optional
 
 # Priority mapping: Issue priority → Backlog priority
 PRIORITY_MAP = {
@@ -42,6 +41,7 @@ PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
 @dataclass
 class BacklogItem:
     """Structure expected by auto-maintain workflow"""
+
     id: str
     title: str
     status: str
@@ -69,9 +69,7 @@ def gh(args: list[str], check: bool = True) -> str:
     """Run gh CLI command and return stdout"""
     cmd = ["gh"] + args
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=check, timeout=60
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=60)
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
         print(f"gh command failed: {' '.join(cmd[:6])}...", file=sys.stderr)
@@ -86,16 +84,21 @@ def gh(args: list[str], check: bool = True) -> str:
 
 def query_issues(
     repo: str,
-    milestone: Optional[str] = None,
-    label: Optional[str] = None,
+    milestone: str | None = None,
+    label: str | None = None,
 ) -> list[dict]:
     """Query open issues from GitHub"""
     args = [
-        "issue", "list",
-        "--repo", repo,
-        "--state", "open",
-        "--json", "number,title,body,labels,milestone,url",
-        "--limit", "500",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,title,body,labels,milestone,url",
+        "--limit",
+        "500",
     ]
 
     if milestone:
@@ -128,27 +131,22 @@ def parse_issue_metadata(body: str) -> dict:
     }
 
     # Target repo
-    target_match = re.search(r'\*\*Target repo:\*\*\s*`([^`]+)`', body)
+    target_match = re.search(r"\*\*Target repo:\*\*\s*`([^`]+)`", body)
     if target_match:
         metadata["target_repo"] = target_match.group(1)
 
     # Effort and Priority (on same line)
-    effort_prio_match = re.search(
-        r'\*\*Effort:\*\*\s*(\w+)\s*\|\s*\*\*Priority:\*\*\s*(\w+)',
-        body
-    )
+    effort_prio_match = re.search(r"\*\*Effort:\*\*\s*(\w+)\s*\|\s*\*\*Priority:\*\*\s*(\w+)", body)
     if effort_prio_match:
         metadata["effort"] = effort_prio_match.group(1).lower()
         metadata["priority"] = effort_prio_match.group(2).lower()
 
     # Dependencies
-    deps_match = re.search(r'\*\*Dependencies:\*\*\s*([^\n]+)', body)
+    deps_match = re.search(r"\*\*Dependencies:\*\*\s*([^\n]+)", body)
     if deps_match:
         deps_str = deps_match.group(1).strip()
         if deps_str and deps_str.lower() != "none":
-            metadata["dependencies"] = [
-                d.strip() for d in deps_str.split(",") if d.strip()
-            ]
+            metadata["dependencies"] = [d.strip() for d in deps_str.split(",") if d.strip()]
 
     return metadata
 
@@ -165,21 +163,21 @@ def extract_acceptance_criteria(body: str) -> list[str]:
 
     # Find acceptance criteria section
     ac_match = re.search(
-        r'##\s+Acceptance Criteria\s*\n(.*?)(?=\n##|\n---|\Z)',
+        r"##\s+Acceptance Criteria\s*\n(.*?)(?=\n##|\n---|\Z)",
         body,
-        re.DOTALL | re.IGNORECASE
+        re.DOTALL | re.IGNORECASE,
     )
 
     if ac_match:
         section = ac_match.group(1)
         # Extract list items
-        for line in section.split('\n'):
+        for line in section.split("\n"):
             line = line.strip()
             # Match checkbox items or bullet points
-            item_match = re.match(r'^[-*]\s*\[[ x]\]\s*(.+)$', line)
+            item_match = re.match(r"^[-*]\s*\[[ x]\]\s*(.+)$", line)
             if item_match:
                 criteria.append(item_match.group(1).strip())
-            elif line.startswith('- ') or line.startswith('* '):
+            elif line.startswith("- ") or line.startswith("* "):
                 criteria.append(line[2:].strip())
 
     return criteria
@@ -188,7 +186,7 @@ def extract_acceptance_criteria(body: str) -> list[str]:
 def issue_to_backlog_item(
     issue: dict,
     target_repo: str,
-) -> tuple[Optional[BacklogItem], Optional[ValidationError]]:
+) -> tuple[BacklogItem | None, ValidationError | None]:
     """Convert GitHub issue to BacklogItem.
 
     Returns (item, error). One will be None.
@@ -205,17 +203,15 @@ def issue_to_backlog_item(
     # If target_repo is not set, assume the issue belongs to the current repo (legacy issues)
     if metadata["target_repo"] and metadata["target_repo"] != target_repo:
         return None, ValidationError(
-            number, title,
-            f"Target repo mismatch: expected {target_repo}, got {metadata['target_repo']}"
+            number,
+            title,
+            f"Target repo mismatch: expected {target_repo}, got {metadata['target_repo']}",
         )
 
     # Extract acceptance criteria
     criteria = extract_acceptance_criteria(body)
     if not criteria:
-        return None, ValidationError(
-            number, title,
-            "No acceptance criteria found in issue body"
-        )
+        return None, ValidationError(number, title, "No acceptance criteria found in issue body")
 
     # Map priority
     priority = PRIORITY_MAP.get(metadata["priority"], "P1")
@@ -225,10 +221,10 @@ def issue_to_backlog_item(
 
     # Generate id from issue number and title
     item_id = f"issue-{number}-{title[:30].lower().replace(' ', '-').replace('/', '-')}"
-    item_id = re.sub(r'[^a-z0-9-]', '', item_id)
+    item_id = re.sub(r"[^a-z0-9-]", "", item_id)
 
     # Extract context (first paragraph of body, before metadata)
-    context_match = re.match(r'^(.*?)(?=\n##|\n---|\Z)', body, re.DOTALL)
+    context_match = re.match(r"^(.*?)(?=\n##|\n---|\Z)", body, re.DOTALL)
     context = context_match.group(1).strip() if context_match else title
 
     # Build item
@@ -253,8 +249,8 @@ def issue_to_backlog_item(
 
 def parse(
     repo: str,
-    milestone: Optional[str] = None,
-    label: Optional[str] = None,
+    milestone: str | None = None,
+    label: str | None = None,
 ) -> tuple[list[BacklogItem], list[ValidationError]]:
     """Query issues and parse them. Returns (items, errors)."""
     issues = query_issues(repo, milestone, label)
@@ -272,7 +268,7 @@ def parse(
     return items, errors
 
 
-def select_next(items: list[BacklogItem]) -> Optional[BacklogItem]:
+def select_next(items: list[BacklogItem]) -> BacklogItem | None:
     """Pick the next eligible item.
 
     Rules: status == 'ready', sorted by priority (P0 > P1 > P2), then issue number.
@@ -291,24 +287,14 @@ def _print_errors(errors: list[ValidationError]) -> None:
         print(f"  - #{err.issue_number} ({err.title}): {err.message}", file=sys.stderr)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--repo",
-        help="Target repository (e.g., Answering-IT/kb-rag-agent-fe). "
-             "Defaults to GITHUB_REPOSITORY env var."
+        help="Target repository (e.g., Answering-IT/kb-rag-agent-fe). " "Defaults to GITHUB_REPOSITORY env var.",
     )
-    parser.add_argument(
-        "--milestone",
-        help="Filter by milestone title"
-    )
-    parser.add_argument(
-        "--label",
-        help="Filter by label (e.g., 'feature', 'bug')"
-    )
+    parser.add_argument("--milestone", help="Filter by milestone title")
+    parser.add_argument("--label", help="Filter by label (e.g., 'feature', 'bug')")
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--validate", action="store_true", help="Validate issues")
