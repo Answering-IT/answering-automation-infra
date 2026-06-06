@@ -25,8 +25,8 @@ on:
         required: false
         type: boolean
         default: false
-      backlog_id:
-        description: 'Specific item ID to implement (overrides selection)'
+      issue_number:
+        description: 'Specific issue number to implement (overrides selection)'
         required: false
         type: string
 
@@ -35,15 +35,15 @@ jobs:
     name: Implement next issue
     uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@main
     with:
-      # GitHub Issues mode (recommended)
-      use_github_issues: true
+      # GitHub Issues mode is now the default (use_github_issues: true)
+      # For legacy BACKLOG.md mode, set: use_github_issues: false
 
       # Filter options (optional)
       milestone: ${{ inputs.milestone }}
       issue_label: ${{ inputs.issue_label }}
 
       # Override selection (optional)
-      backlog_id: ${{ inputs.backlog_id }}
+      issue_number: ${{ inputs.issue_number }}
 
       # Dry run mode (optional)
       dry_run: ${{ inputs.dry_run }}

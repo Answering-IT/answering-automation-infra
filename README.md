@@ -6,15 +6,15 @@ Central repository for self-maintaining workflows across Answering-IT repos.
 
 Reusable GitHub Actions workflows so any repo can:
 
-- Consume work items from GitHub Issues (created by documentation workflow) or `BACKLOG.md` files
+- Consume work items from GitHub Issues (default)
 - Trigger Claude Code (via AWS Bedrock) to implement items end-to-end
 - Open PRs that go through the same quality gates as human-authored code
 
 **Key principle:** Write the workflow once, version it, consumers reference it by tag.
 
-**Two modes:**
-- **GitHub Issues mode** (recommended): Issues are created by the central documentation repo, grouped by milestone, automatically formatted
-- **BACKLOG.md mode** (legacy): Manual maintenance of BACKLOG.md in each consumer repo
+**Work queue modes:**
+- **GitHub Issues mode** (default): Issues are created by the central documentation repo, grouped by milestone, automatically formatted
+- **BACKLOG.md mode** (deprecated): Manual maintenance of BACKLOG.md in each consumer repo. Use `use_github_issues: false` to enable.
 
 ---
 

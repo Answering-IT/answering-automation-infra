@@ -1,15 +1,15 @@
 name: Auto Maintain (Reusable)
 
-# Reusable workflow that reads BACKLOG.md, picks the next item, hands it to
-# Claude via Bedrock, and opens a PR.
+# Reusable workflow that reads GitHub Issues (default) or BACKLOG.md (legacy),
+# picks the next item, hands it to Claude via Bedrock, and opens a PR.
 #
 # Called by consumer repos via workflow_call. See README.md for usage.
 
 on:
   workflow_call:
     inputs:
-      backlog_id:
-        description: 'Specific backlog item id to implement (leave blank for --next)'
+      issue_number:
+        description: 'Specific issue number to implement (leave blank for --next)'
         required: false
         type: string
         default: ''
@@ -23,10 +23,10 @@ on:
         required: true
         type: string
       use_github_issues:
-        description: 'Use GitHub Issues instead of BACKLOG.md'
+        description: 'Use GitHub Issues instead of BACKLOG.md (default: true)'
         required: false
         type: boolean
-        default: false
+        default: true
       milestone:
         description: 'Filter issues by milestone title (only when use_github_issues=true)'
         required: false
@@ -71,7 +71,7 @@ concurrency:
 
 jobs:
   pick-item:
-    name: Pick next backlog item
+    name: Pick next work item
     runs-on: ubuntu-latest
     outputs:
       has_item: ${{ steps.pick.outputs.has_item }}
@@ -110,7 +110,7 @@ jobs:
       - name: Pick item
         id: pick
         env:
-          OVERRIDE_ID: ${{ inputs.backlog_id }}
+          OVERRIDE_ISSUE_NUMBER: ${{ inputs.issue_number }}
           USE_ISSUES: ${{ inputs.use_github_issues }}
           MILESTONE: ${{ inputs.milestone }}
           LABEL: ${{ inputs.issue_label }}
@@ -119,37 +119,31 @@ jobs:
           set -euo pipefail
 
           if [ "${USE_ISSUES}" = "true" ]; then
-            # GitHub Issues mode
+            # GitHub Issues mode (default)
             FILTER_ARGS=""
             [ -n "${MILESTONE}" ] && FILTER_ARGS="${FILTER_ARGS} --milestone ${MILESTONE}"
             [ -n "${LABEL}" ] && FILTER_ARGS="${FILTER_ARGS} --label ${LABEL}"
 
-            if [ -n "${OVERRIDE_ID}" ]; then
-              echo "Looking for explicit id: ${OVERRIDE_ID}"
+            if [ -n "${OVERRIDE_ISSUE_NUMBER}" ]; then
+              echo "Looking for explicit issue: #${OVERRIDE_ISSUE_NUMBER}"
               ITEM=$(python parse_items.py --list ${FILTER_ARGS} | python -c "
           import json, sys, os
-          target = os.environ['OVERRIDE_ID']
+          target = os.environ['OVERRIDE_ISSUE_NUMBER']
           items = json.load(sys.stdin)
-          match = next((i for i in items if i['id'] == target and i['status'] == 'ready'), None)
+          match = next((i for i in items if str(i.get('github_issue_ref', '')).lstrip('#') == target and i['status'] == 'ready'), None)
           print(json.dumps(match))
           ")
             else
               ITEM=$(python parse_items.py --next ${FILTER_ARGS})
             fi
           else
-            # BACKLOG.md mode (legacy)
-            if [ -n "${OVERRIDE_ID}" ]; then
-              echo "Looking for explicit id: ${OVERRIDE_ID}"
-              ITEM=$(python parse_items.py --list | python -c "
-          import json, sys, os
-          target = os.environ['OVERRIDE_ID']
-          items = json.load(sys.stdin)
-          match = next((i for i in items if i['id'] == target and i['status'] == 'ready'), None)
-          print(json.dumps(match))
-          ")
-            else
-              ITEM=$(python parse_items.py --next)
+            # BACKLOG.md mode (legacy - deprecated)
+            echo "::warning::BACKLOG.md mode is deprecated. Please migrate to GitHub Issues."
+            if [ -n "${OVERRIDE_ISSUE_NUMBER}" ]; then
+              echo "::error::issue_number parameter only works with use_github_issues=true"
+              exit 1
             fi
+            ITEM=$(python parse_items.py --next)
           fi
 
           if [ "${ITEM}" = "null" ] || [ -z "${ITEM}" ]; then
