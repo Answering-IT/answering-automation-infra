@@ -28,7 +28,14 @@ DEFAULT_BACKLOG = Path("BACKLOG.md")
 VALID_STATUSES = {"ready", "blocked", "in_progress", "done"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
-REQUIRED_FIELDS = {"id", "title", "status", "priority", "context", "acceptance_criteria"}
+REQUIRED_FIELDS = {
+    "id",
+    "title",
+    "status",
+    "priority",
+    "context",
+    "acceptance_criteria",
+}
 
 # Match fenced blocks tagged exactly `yaml backlog`. Other code blocks are ignored.
 _BLOCK_RE = re.compile(r"^```yaml backlog\s*\n(.*?)^```", re.MULTILINE | re.DOTALL)
@@ -81,7 +88,9 @@ def parse(text: str) -> tuple[list[BacklogItem], list[ValidationError]]:
         if data["status"] not in VALID_STATUSES:
             errors.append(
                 ValidationError(
-                    index, item_id, f"Invalid status {data['status']!r}; must be one of {sorted(VALID_STATUSES)}"
+                    index,
+                    item_id,
+                    f"Invalid status {data['status']!r}; must be one of {sorted(VALID_STATUSES)}",
                 )
             )
             continue
@@ -89,7 +98,9 @@ def parse(text: str) -> tuple[list[BacklogItem], list[ValidationError]]:
         if data["priority"] not in VALID_PRIORITIES:
             errors.append(
                 ValidationError(
-                    index, item_id, f"Invalid priority {data['priority']!r}; must be one of {sorted(VALID_PRIORITIES)}"
+                    index,
+                    item_id,
+                    f"Invalid priority {data['priority']!r}; must be one of {sorted(VALID_PRIORITIES)}",
                 )
             )
             continue
@@ -158,9 +169,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--file", type=Path, default=DEFAULT_BACKLOG, help="Path to BACKLOG.md")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--validate", action="store_true", help="Validate items; exit non-zero on errors")
-    mode.add_argument("--next", dest="next_", action="store_true", help="Print next eligible item as JSON")
-    mode.add_argument("--list", dest="list_", action="store_true", help="Print all valid items as JSON")
+    mode.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate items; exit non-zero on errors",
+    )
+    mode.add_argument(
+        "--next",
+        dest="next_",
+        action="store_true",
+        help="Print next eligible item as JSON",
+    )
+    mode.add_argument(
+        "--list",
+        dest="list_",
+        action="store_true",
+        help="Print all valid items as JSON",
+    )
     args = parser.parse_args(argv)
 
     try:

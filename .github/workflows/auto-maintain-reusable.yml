@@ -186,6 +186,10 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Record start time
+        id: start-timer
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout consumer repo
         uses: actions/checkout@v4
 
@@ -331,3 +335,22 @@ jobs:
           PR_NUMBER=$(gh pr list --label automated --state open --search "auto/${ITEM_ID}" --json number --jq '.[0].number')
           echo "✅ PR #${PR_NUMBER} successfully created for ${ITEM_ID}"
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate duration
+        id: calculate-duration
+        if: always()
+        env:
+          START: ${{ steps.start-timer.outputs.start }}
+        run: |
+          END=$(date +%s)
+          SECONDS_ELAPSED=$(( END - START ))
+          MINUTES=$(( SECONDS_ELAPSED / 60 ))
+          SECS=$(( SECONDS_ELAPSED % 60 ))
+          if [ "${MINUTES}" -gt 0 ]; then
+            FORMATTED="${MINUTES}m ${SECS}s"
+          else
+            FORMATTED="${SECS}s"
+          fi
+          echo "seconds=${SECONDS_ELAPSED}" >> "$GITHUB_OUTPUT"
+          echo "formatted=${FORMATTED}" >> "$GITHUB_OUTPUT"
+          echo "Duration: ${FORMATTED} (${SECONDS_ELAPSED}s)"
