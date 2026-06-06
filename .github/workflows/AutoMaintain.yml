@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   run:
-    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.6
+    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.7
     with:
       issue_number: ${{ inputs.issue_number }}
       dry_run: ${{ inputs.dry_run }}
