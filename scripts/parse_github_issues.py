@@ -52,9 +52,10 @@ class BacklogItem:
     files_to_touch: list[str] = field(default_factory=list)
     tests_required: list[str] = field(default_factory=list)
     notes: str = ""
-    # Extra fields for tracking
+    # Extra fields for GitHub Issues mode
     issue_number: int = 0
     issue_url: str = ""
+    github_issue_ref: str = ""  # e.g., "#123" for linking in PR body
 
 
 @dataclass
@@ -244,6 +245,7 @@ def issue_to_backlog_item(
         notes=f"Generated from GitHub issue #{number}",
         issue_number=number,
         issue_url=url,
+        github_issue_ref=f"#{number}",
     )
 
     return item, None
@@ -339,11 +341,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.next_:
         item = select_next(items)
-        # Don't include internal tracking fields in JSON output
+        # Keep github_issue_ref for PR linking, remove internal tracking fields
         if item:
             item_dict = asdict(item)
             del item_dict["issue_number"]
             del item_dict["issue_url"]
+            # github_issue_ref is kept for PR description
             print(json.dumps(item_dict, indent=2, ensure_ascii=False))
         else:
             print("null")
@@ -355,6 +358,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             item_dict = asdict(item)
             del item_dict["issue_number"]
             del item_dict["issue_url"]
+            # github_issue_ref is kept for PR linking
             items_dicts.append(item_dict)
         print(json.dumps(items_dicts, indent=2, ensure_ascii=False))
         return 0

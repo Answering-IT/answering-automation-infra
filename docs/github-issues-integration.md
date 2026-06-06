@@ -38,8 +38,13 @@ The reusable workflow uses `scripts/parse_github_issues.py` to:
 
 Same flow as BACKLOG.md mode:
 - Build prompt from issue metadata (title, acceptance criteria, labels)
+- **Automatically adds `Closes #123` to PR description** (links PR to issue)
 - Invoke Claude Code Action via Bedrock
 - Create PR with branch `auto/{issue-id}`, labels `automated` + `backlog-driven`
+
+### 4. Issue closes automatically when PR merges
+
+GitHub's native linking: when the PR merges, the issue closes automatically. No manual cleanup needed.
 
 ## Usage
 
@@ -237,6 +242,49 @@ The only difference is the source: GitHub Issues API instead of parsing BACKLOG.
 3. **Native GitHub features**: Milestones, labels, dependencies, mentions
 4. **No merge conflicts**: BACKLOG.md often caused conflicts in active repos
 5. **Automatic creation**: Feature specs → Issues (AI-generated, consistent format)
+6. **Automatic closure**: PR body contains `Closes #123`, issue closes when PR merges
+7. **Full audit trail**: Issue → PR → Commits → Merge, all linked in GitHub UI
+
+## Issue-PR Linking
+
+### Automatic closure
+
+When the workflow picks a GitHub Issue, it:
+1. Extracts the issue number (e.g., `#123`)
+2. Adds it to the prompt: "At the end of PR description, add: `Closes #123`"
+3. Claude includes `Closes #123` in the PR body
+4. When the PR merges → GitHub automatically closes the issue
+
+### Supported keywords
+
+GitHub recognizes these keywords in PR body:
+- `Closes #123` (preferred)
+- `Fixes #123`
+- `Resolves #123`
+
+All three work identically. The workflow uses `Closes` by convention.
+
+### Manual override
+
+If Claude doesn't add the keyword (rare), you can:
+1. Edit the PR description manually
+2. Add `Closes #123` anywhere in the body
+3. Merge → issue closes
+
+### Cross-repo linking
+
+If issues are in a different repo (e.g., documentation repo creates issues in target repos):
+- Same repo: `Closes #123`
+- Different repo: `Closes Answering-IT/other-repo#123`
+
+The current implementation assumes same-repo (issues created in target repo by documentation workflow).
+
+### Verification
+
+After the workflow runs:
+1. Check the PR body for `Closes #123`
+2. GitHub shows a linked issue badge in the PR UI
+3. Issue page shows "linked pull request" indicator
 
 ## Next steps
 
@@ -245,3 +293,4 @@ See [Open Design Questions](project_next_steps_automation.md) in the documentati
 - Cost tracking per Claude session
 - Alerts for long sessions
 - Dev agent for testing before opening PR
+- Comment on issue with PR link when automation starts

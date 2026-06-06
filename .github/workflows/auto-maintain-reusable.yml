@@ -245,6 +245,20 @@ jobs:
               parts.append(f"## Notes\n{item['notes']}\n")
 
           gate_cmds = gates.get(lang, gates["python"])
+
+          # Build PR description requirements
+          pr_desc_parts = [
+              "- A short \"what changed\" section",
+              "- The acceptance criteria, with checkboxes ticked for what's done",
+              "- Any blockers or follow-ups, if applicable"
+          ]
+
+          # If this is from a GitHub Issue, add closing keyword
+          if item.get('github_issue_ref'):
+              pr_desc_parts.append(f"- At the end, add: `Closes {item['github_issue_ref']}`")
+
+          pr_desc_requirements = chr(10).join(f"  {p}" for p in pr_desc_parts)
+
           parts.append(textwrap.dedent(f"""
               ## Working agreement
 
@@ -257,9 +271,7 @@ jobs:
               - When you commit, branch name must be `auto/{item['id']}` (it is already created for you).
               - Open a single PR titled exactly: `auto({item['id']}): {item['title']}`
               - The PR description must include:
-                - A short "what changed" section
-                - The acceptance criteria, with checkboxes ticked for what's done
-                - Any blockers or follow-ups, if applicable
+              {pr_desc_requirements}
               - Apply the labels `automated` and `backlog-driven` to the PR.
 
               ## Repo conventions
