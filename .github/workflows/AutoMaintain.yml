@@ -1,0 +1,33 @@
+# Bedrock + OIDC), and opens a PR. The PR then goes through Build.yml gates.
+#
+# Implementation lives in answering-automation-infra. See:
+# https://github.com/Answering-IT/answering-automation-infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      backlog_id:
+        description: 'Specific backlog item id to implement (leave blank for --next)'
+        required: false
+      dry_run:
+        description: 'Print prompt without invoking Claude'
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write       # AWS OIDC
+  contents: write       # commit + push
+  pull-requests: write  # open PR
+  issues: write         # claude-code-action may comment
+
+jobs:
+  run:
+    uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.5
+    with:
+      backlog_id: ${{ inputs.backlog_id }}
+      dry_run: ${{ inputs.dry_run }}
+      language: python
+      bedrock_model: us.anthropic.claude-sonnet-4-6
+    secrets:
+      AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
+      AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
