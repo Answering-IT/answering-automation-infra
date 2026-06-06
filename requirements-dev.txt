@@ -1,0 +1,14 @@
+# Development dependencies for CI/CD pipeline
+# Used for linting, testing, and validation
+
+# Required for parse_backlog.py
+PyYAML==6.0.1
+
+# Linting and code quality
+ruff==0.4.0
+
+# Shell script linting
+shellcheck-py==0.10.0.1
+
+# YAML validation
+yamllint==1.35.1
