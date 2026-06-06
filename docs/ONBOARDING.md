@@ -58,8 +58,8 @@ name: Auto Maintain
 on:
   workflow_dispatch:
     inputs:
-      backlog_id:
-        description: 'Override item ID (leave blank for --next)'
+      issue_number:
+        description: 'Specific issue number to implement (leave blank for --next)'
         required: false
       dry_run:
         description: 'Print prompt without invoking Claude'
@@ -76,10 +76,12 @@ jobs:
   run:
     uses: Answering-IT/answering-automation-infra/.github/workflows/auto-maintain-reusable.yml@v1.0.4
     with:
-      backlog_id: ${{ inputs.backlog_id }}
+      issue_number: ${{ inputs.issue_number }}
       dry_run: ${{ inputs.dry_run }}
       language: python                              # python | typescript | go
       bedrock_model: us.anthropic.claude-sonnet-4-6
+      # use_github_issues defaults to true
+      # For legacy BACKLOG.md mode: use_github_issues: false
     secrets:
       AUTO_MAINTAIN_APP_ID: ${{ secrets.AUTO_MAINTAIN_APP_ID }}
       AUTO_MAINTAIN_APP_PRIVATE_KEY: ${{ secrets.AUTO_MAINTAIN_APP_PRIVATE_KEY }}
