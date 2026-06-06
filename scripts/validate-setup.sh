@@ -62,7 +62,6 @@ echo ""
 
 # Check 3: Actions permissions
 echo "⚙️  Checking Actions permissions..."
-ACTIONS_PERMS=$(gh api "/repos/${REPO}" --jq '.permissions.actions' 2>/dev/null || echo "unknown")
 # Note: This API doesn't expose the "Allow Actions to create PRs" setting
 # User needs to verify manually
 echo "  ℹ️  Cannot check via API - verify manually:"
