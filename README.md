@@ -6,11 +6,15 @@ Central repository for self-maintaining workflows across Answering-IT repos.
 
 Reusable GitHub Actions workflows so any repo can:
 
-- Maintain a `BACKLOG.md` file with feature/task items
+- Consume work items from GitHub Issues (created by documentation workflow) or `BACKLOG.md` files
 - Trigger Claude Code (via AWS Bedrock) to implement items end-to-end
 - Open PRs that go through the same quality gates as human-authored code
 
 **Key principle:** Write the workflow once, version it, consumers reference it by tag.
+
+**Two modes:**
+- **GitHub Issues mode** (recommended): Issues are created by the central documentation repo, grouped by milestone, automatically formatted
+- **BACKLOG.md mode** (legacy): Manual maintenance of BACKLOG.md in each consumer repo
 
 ---
 
@@ -18,18 +22,20 @@ Reusable GitHub Actions workflows so any repo can:
 
 ```
 .github/workflows/
-├── auto-maintain-reusable.yml      # Picks BACKLOG item → invokes Claude → opens PR
+├── auto-maintain-reusable.yml      # Picks work item → invokes Claude → opens PR
 └── build-python-reusable.yml       # Python lint/test gates (ruff, black, pytest)
 
 scripts/
-└── parse_backlog.py                # Parses BACKLOG.md (validates, picks --next)
+├── parse_backlog.py                # Parses BACKLOG.md (validates, picks --next)
+└── parse_github_issues.py          # Queries GitHub Issues (validates, picks --next)
 
 templates/
 └── python/                         # Starter pack: pyproject.toml, BACKLOG.md, etc.
 
 docs/
 ├── ONBOARDING.md                   # Add auto-maintain to a new repo
-├── BACKLOG_FORMAT.md               # Schema for backlog items
+├── BACKLOG_FORMAT.md               # Schema for backlog items (BACKLOG.md mode)
+├── github-issues-integration.md    # GitHub Issues mode (recommended)
 └── TROUBLESHOOTING.md              # Common failures and fixes
 ```
 
