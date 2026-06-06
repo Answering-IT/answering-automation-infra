@@ -312,6 +312,51 @@ jobs:
         env:
           AWS_REGION: ${{ inputs.aws_region }}
 
+      - name: token-usage
+        id: token-usage
+        if: always()
+        env:
+          CLAUDE_OUTPUT: ${{ steps.claude.outputs.output }}
+        run: |
+          python3 << 'PY'
+          import json
+          import os
+          import re
+
+          raw = os.environ.get("CLAUDE_OUTPUT", "")
+          input_tokens = 0
+          output_tokens = 0
+
+          try:
+              data = json.loads(raw)
+              usage = data.get("usage", {})
+              input_tokens = max(0, int(usage.get("input_tokens", 0)))
+              output_tokens = max(0, int(usage.get("output_tokens", 0)))
+          except Exception:
+              try:
+                  m = re.search(r'"input_tokens"\s*:\s*(\d+)', raw)
+                  if m:
+                      input_tokens = max(0, int(m.group(1)))
+                  m = re.search(r'"output_tokens"\s*:\s*(\d+)', raw)
+                  if m:
+                      output_tokens = max(0, int(m.group(1)))
+              except Exception:
+                  pass
+
+          cost_raw = (input_tokens / 1_000_000 * 3.00) + (output_tokens / 1_000_000 * 15.00)
+          cost = f"${cost_raw:.3f}"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"input_tokens={input_tokens}\n")
+              fh.write(f"output_tokens={output_tokens}\n")
+              fh.write(f"cost={cost}\n")
+              fh.write(f"cost_raw={cost_raw}\n")
+
+          print(f"Input tokens:  {input_tokens}")
+          print(f"Output tokens: {output_tokens}")
+          print(f"Cost:          {cost}")
+          PY
+
       - name: Verify PR was created
         if: ${{ !inputs.dry_run }}
         env:
