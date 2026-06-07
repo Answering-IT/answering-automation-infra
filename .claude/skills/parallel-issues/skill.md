@@ -1,202 +1,186 @@
 ---
 skill: parallel-issues
-description: Orchestrate parallel issue development with worktrees and priority handling
+description: Orchestrate parallel issue development with worktrees, priority handling, and conflict analysis
 ---
 
 # Parallel Issue Development Skill
 
-You are orchestrating parallel issue development. Follow this workflow:
+Orchestrates parallel issue development with intelligent conflict detection and Discord notifications.
+
+## Configuration
+
+Discord webhook:
+```
+https://discord.com/api/webhooks/1513268978670108744/JOSFHiPfLroRMy9KzcWqcwXSZdM02mJxWGlYjD4BBbd_N_jnZHxdKYEoPsAUAdQTCmiH
+```
+
+## Workflow Overview
+
+1. Fetch & organize issues by priority
+2. Create worktrees for parallel work
+3. Implement each issue with atomic commits
+4. Create PRs with dependency metadata
+5. Analyze conflicts & send Discord notification
+6. Optionally spawn conflict-resolver agent
+
+---
 
 ## Phase 1: Fetch & Organize Issues
 
-1. Fetch open issues from GitHub:
-   ```bash
-   gh issue list --json number,title,body,labels --state open --limit 50 > /tmp/issues.json
-   ```
+**Fetch open issues**:
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+gh issue list --json number,title,body,labels --state open --limit 50 > /tmp/issues.json
+```
 
-2. Parse issues and organize by:
-   - **Priority**: Extract from `**Priority:** high/medium/low` in issue body
-   - **Dependencies**: Extract from `**Dependencies:** title1, title2` in issue body
-   - **Status**: Check for `blocked` label
+**Parse and organize**:
+- Extract priority: `**Priority:** high/medium/low` from body
+- Extract dependencies: `**Dependencies:** title1, title2` from body
+- Check for `blocked` label
+- Build dependency graph
+- Compute ready issues (dependencies satisfied)
 
-3. Build dependency graph and compute ready issues (dependencies satisfied)
+**Display organized list** and ask user to proceed.
 
-4. Display organized issue list:
-   ```
-   === High Priority (2 issues) ===
-   #24: Send Discord notification on workflow success
-   #25: Send Discord notification on workflow failure
-   
-   === Medium Priority (1 issue) ===
-   #27: Add long-running session monitor
-   
-   === Blocked (1 issue) ===
-   #26: Validate notification flow (depends on #24, #25)
-   ```
-
-5. Ask user: "Ready to create worktrees for these issues?"
+---
 
 ## Phase 2: Create Worktrees
 
-For each ready issue (by priority order):
+For each ready issue (priority order: high → medium → low):
 
-1. Create worktree:
-   ```bash
-   git worktree add .trees/auto-{issue_id} -b auto/issue-{issue_id}
-   ```
+```bash
+# Create worktree
+git worktree add .trees/auto-{issue_id} -b auto/issue-{issue_id}
 
-2. Symlink .venv if exists:
-   ```bash
-   [ -d .venv ] && ln -s "$(pwd)/.venv" .trees/auto-{issue_id}/.venv
-   ```
+# Symlink .venv
+[ -d .venv ] && ln -s "$(pwd)/.venv" .trees/auto-{issue_id}/.venv
 
-3. Track created worktrees in a list
+# Create metadata
+cat > .trees/auto-{issue_id}/PR_METADATA.json <<EOF
+{
+  "pr_number": null,
+  "issue_id": {issue_id},
+  "priority": "{priority}",
+  "dependencies": [{dep_ids}],
+  "created_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+```
 
-4. Display summary:
-   ```
-   Created 3 worktrees:
-   - .trees/auto-24 (high priority)
-   - .trees/auto-25 (high priority)
-   - .trees/auto-27 (medium priority)
-   ```
+---
 
-## Phase 3: Implement Issues (Guided Workflow)
+## Phase 3: Implement Issues
 
-For each issue in priority order:
+For each issue (priority order):
 
-1. **Switch context**: 
+1. **Display issue details** (title, context, acceptance criteria)
+2. **Implement feature** following requirements
+3. **Create atomic commit**:
    ```bash
    cd .trees/auto-{issue_id}
-   ```
-
-2. **Display issue details**:
-   ```
-   Working on: #{issue_id} - {title}
-   Priority: {priority}
-   
-   ## Context
-   {context from issue body}
-   
-   ## Acceptance Criteria
-   {criteria from issue body}
-   ```
-
-3. **Implement the feature** following the issue requirements
-
-4. **Create atomic commit**:
-   ```bash
    git add .
    git commit -m "feat(issue-{issue_id}): {brief description}"
    ```
+4. **Validate commit** (format + single commit check)
+5. **Return to root** and continue
 
-5. **Validate commit**:
-   - Check message format: `feat(issue-N):` or `fix(issue-N):`
-   - Check exactly one commit on branch: `git log main..HEAD --oneline`
-
-6. **Return to root**:
-   ```bash
-   cd ../..
-   ```
-
-7. Ask: "Issue #{issue_id} complete. Continue to next issue?"
-
-**Important**: Work through issues in priority order (high → medium → low) and respect dependencies.
+---
 
 ## Phase 4: Create Pull Requests
 
-After all issues are implemented:
+For each worktree:
 
-1. For each completed worktree (in dependency order):
-   
-   ```bash
-   cd .trees/auto-{issue_id}
-   
-   # Push branch
-   git push origin auto/issue-{issue_id}
-   
-   # Create PR
-   gh pr create \
-     --title "$(git log -1 --pretty=%s)" \
-     --body "Closes #{issue_id}" \
-     --base main \
-     --head auto/issue-{issue_id}
-   
-   cd ../..
-   ```
+```bash
+cd .trees/auto-{issue_id}
 
-2. Display PR summary:
-   ```
-   Created PRs:
-   ✓ #24 → PR #45: https://github.com/owner/repo/pull/45
-   ✓ #25 → PR #46: https://github.com/owner/repo/pull/46
-   ✓ #27 → PR #47: https://github.com/owner/repo/pull/47
-   ```
+# Get metadata
+issue_id=$(jq -r '.issue_id' PR_METADATA.json)
+deps=$(jq -r '.dependencies | join(", #")' PR_METADATA.json)
 
-3. **Keep worktrees** (don't remove them) - useful for PR review fixes
+# Build PR body with dependencies
+if [ -n "$deps" ] && [ "$deps" != "null" ]; then
+  dep_section="## Dependencies
+- Must merge PR #$deps first"
+else
+  dep_section="## Dependencies
+- None (can be merged first)"
+fi
 
-## Phase 5: Summary & Cleanup Guide
+pr_body="Closes #${issue_id}
 
-Display final summary:
+## Changes
+$(git log -1 --pretty=%B)
+
+${dep_section}
+
+---
+🤖 Generated by parallel-issues"
+
+# Push & create PR
+git push origin auto/issue-${issue_id}
+pr_url=$(gh pr create --title "$(git log -1 --pretty=%s)" --body "$pr_body" --base main --head auto/issue-${issue_id})
+
+# Update metadata with PR number
+pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+jq ".pr_number = $pr_number" PR_METADATA.json > PR_METADATA.json.tmp
+mv PR_METADATA.json.tmp PR_METADATA.json
+
+cd ../..
 ```
-=== Parallel Development Summary ===
-✓ 3 issues implemented
-✓ 3 PRs created
-✓ Worktrees kept for potential fixes
 
-Next steps:
-1. Review PRs in GitHub
-2. Make fixes in worktrees if needed:
-   cd .trees/auto-{id}
-   # make changes
-   git commit --amend --no-edit
-   git push origin auto/issue-{id} --force
-   
-3. After PRs merged, clean up:
-   git worktree remove .trees/auto-{id}
+---
+
+## Phase 5: Conflict Analysis & Discord Notification
+
+**Source libraries**:
+```bash
+source .claude/lib/conflict_analyzer.sh
+source .claude/lib/discord_notify.sh
 ```
+
+**Analyze conflicts**:
+```bash
+# Check which PRs edit same files
+conflict_matrix=$(analyze_conflicts "$pr_list")
+
+# Categorize PRs
+ready_prs=""      # No conflicts, no dependencies
+conflict_prs=""   # Will have conflicts
+```
+
+**Send Discord notification**:
+```bash
+webhook="https://discord.com/api/webhooks/1513268978670108744/JOSFHiPfLroRMy9KzcWqcwXSZdM02mJxWGlYjD4BBbd_N_jnZHxdKYEoPsAUAdQTCmiH"
+
+fields='[
+  {"name": "✅ Ready to Merge", "value": "PR #32\nPR #33", "inline": false},
+  {"name": "⚠️ Will Need Rebase", "value": "PR #34 (conflicts with #32, #33)", "inline": false},
+  {"name": "📋 Merge Order", "value": "#32 → #33 → #34", "inline": false}
+]'
+
+send_discord_embed "$webhook" "🚀 Parallel Development Complete" "3 PRs created, 1 will need conflict resolution" "$DISCORD_COLOR_WARNING" "$fields"
+```
+
+**Display local summary** with merge order and conflict info.
+
+**Ask**: "Conflicts detected. Spawn conflict-resolver agent? (yes/no)"
+
+---
 
 ## Error Handling
 
-**If issue has unsatisfied dependencies**:
-- Skip for now
-- Add to blocked list
-- Process after dependencies are completed
+- **Worktree exists**: Ask to remove and recreate
+- **Invalid commit format**: Ask user to amend
+- **PR creation fails**: Log and continue with others
+- **No issues found**: Exit gracefully
 
-**If worktree already exists**:
-- Warn user
-- Ask: "Worktree exists. Remove and recreate? (yes/no)"
-
-**If commit format is wrong**:
-- Show error
-- Ask user to fix with: `git commit --amend`
-- Validate again before proceeding
-
-**If PR creation fails**:
-- Log error
-- Continue with other PRs
-- Show failed issues at end for manual review
-
-## Special Cases
-
-**Single issue mode**: If user provides `--issue N`, only process that issue
-
-**Dry run**: If user wants to see plan first, show organized list without creating worktrees
-
-**Interactive mode**: Ask for confirmation between each phase
-
-## Repository Detection
-
-Auto-detect repository from:
-1. `$GITHUB_REPOSITORY` env var
-2. Git remote: `git remote get-url origin | sed 's/.*github.com[:/]\(.*\)\.git/\1/'`
-3. Ask user if not found
+---
 
 ## Notes
 
-- Always use `.trees/auto-{issue_id}` naming convention
-- Always use `auto/issue-{issue_id}` branch names
-- Enforce commit message format: `feat(issue-N):` or `fix(issue-N):`
-- Include `Closes #{issue_id}` in PR body for auto-linking
-- Process issues by priority: high → medium → low
-- Respect dependencies: block dependent issues until dependencies complete
-- Keep worktrees after PR creation for potential fixes
+- Naming: `.trees/auto-{id}` and `auto/issue-{id}`
+- Commit format: `feat(issue-N):` or `fix(issue-N):`
+- PRs include dependency metadata
+- Worktrees persist for PR fixes
+- Discord notifies once after all PRs created
+- Agent handoff for conflict resolution
