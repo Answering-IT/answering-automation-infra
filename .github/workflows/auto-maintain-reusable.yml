@@ -619,7 +619,7 @@ jobs:
             REASON="PR creation failed"
           fi
 
-          PAYLOAD=$(cat << EOFPAYLOAD
+          PAYLOAD=$(cat << 'EOF'
           {
             "embeds": [{
               "title": "❌ Auto Maintain Failed",
@@ -634,7 +634,7 @@ jobs:
               "timestamp": "${TIMESTAMP}"
             }]
           }
-EOFPAYLOAD
+          EOF
           )
 
           curl -X POST "${DISCORD_WEBHOOK_URL}" \
@@ -683,7 +683,7 @@ EOFPAYLOAD
 
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          PAYLOAD=$(cat << EOFPAYLOAD
+          PAYLOAD=$(cat << 'EOF'
           {
             "embeds": [{
               "title": "🚨 Long-Running Claude Session",
@@ -699,7 +699,7 @@ EOFPAYLOAD
               "timestamp": "${TIMESTAMP}"
             }]
           }
-EOFPAYLOAD
+          EOF
           )
 
           curl -X POST "${DISCORD_WEBHOOK_URL}" \
