@@ -57,6 +57,8 @@ on:
         required: true
       AUTO_MAINTAIN_APP_PRIVATE_KEY:
         required: true
+      DISCORD_WEBHOOK_URL:
+        required: false
 
 permissions:
   id-token: write       # AWS OIDC
@@ -189,6 +191,45 @@ jobs:
       - name: Record start time
         id: start-timer
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord - Workflow Started
+        id: notify-started
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          ITEM_ID: ${{ needs.pick-item.outputs.item_id }}
+          ITEM_TITLE: ${{ needs.pick-item.outputs.item_title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          PAYLOAD=$(cat << EOF
+          {
+            "embeds": [{
+              "title": "🚀 Auto Maintain Started",
+              "description": "Implementing: ${ITEM_TITLE}",
+              "color": 3447003,
+              "fields": [
+                {"name": "Repo", "value": "${REPO}", "inline": true},
+                {"name": "Item", "value": "${ITEM_ID}", "inline": true},
+                {"name": "Run", "value": "[View workflow run](${RUN_URL})", "inline": false}
+              ],
+              "timestamp": "${TIMESTAMP}"
+            }]
+          }
+          EOF
+          )
+
+          curl -X POST "${DISCORD_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            || echo "Discord notification failed, continuing"
 
       - name: Checkout consumer repo
         uses: actions/checkout@v4
@@ -499,3 +540,52 @@ jobs:
           else
             echo "No changes to COSTS.md or file not found, skipping commit."
           fi
+
+      - name: Notify Discord - Workflow Completed
+        id: notify-completed
+        if: success()
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          ITEM_TITLE: ${{ needs.pick-item.outputs.item_title }}
+          DURATION: ${{ steps.calculate-duration.outputs.formatted }}
+          COST: ${{ steps.token-usage.outputs.cost }}
+          PR_NUMBER: ${{ steps.verify-pr.outputs.pr_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [ -n "${PR_NUMBER}" ]; then
+            PR_FIELD="{\"name\": \"PR\", \"value\": \"[#${PR_NUMBER}](${RUN_URL%/actions/runs/*}/pull/${PR_NUMBER})\", \"inline\": false}"
+          else
+            PR_FIELD="{\"name\": \"PR\", \"value\": \"No PR created\", \"inline\": false}"
+          fi
+
+          PAYLOAD=$(cat << EOF
+          {
+            "embeds": [{
+              "title": "✅ Auto Maintain Completed",
+              "description": "Successfully implemented: ${ITEM_TITLE}",
+              "color": 5763719,
+              "fields": [
+                {"name": "Repo", "value": "${REPO}", "inline": true},
+                {"name": "Duration", "value": "${DURATION}", "inline": true},
+                {"name": "Cost", "value": "${COST}", "inline": true},
+                ${PR_FIELD}
+              ],
+              "timestamp": "${TIMESTAMP}"
+            }]
+          }
+          EOF
+          )
+
+          curl -X POST "${DISCORD_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            || echo "Discord notification failed, continuing"
