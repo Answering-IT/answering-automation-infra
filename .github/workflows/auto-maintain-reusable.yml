@@ -358,6 +358,7 @@ jobs:
           PY
 
       - name: Verify PR was created
+        id: verify-pr
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -399,3 +400,102 @@ jobs:
           echo "seconds=${SECONDS_ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "formatted=${FORMATTED}" >> "$GITHUB_OUTPUT"
           echo "Duration: ${FORMATTED} (${SECONDS_ELAPSED}s)"
+
+      - name: Append COSTS.md entry
+        if: always()
+        continue-on-error: true
+        env:
+          INPUT_TOKENS: ${{ steps.token-usage.outputs.input_tokens }}
+          OUTPUT_TOKENS: ${{ steps.token-usage.outputs.output_tokens }}
+          COST: ${{ steps.token-usage.outputs.cost }}
+          DURATION: ${{ steps.calculate-duration.outputs.formatted }}
+          PR_NUMBER: ${{ steps.verify-pr.outputs.pr_number }}
+          ITEM_TITLE: ${{ needs.pick-item.outputs.item_title }}
+          ITEM_ID: ${{ needs.pick-item.outputs.item_id }}
+          MODEL: ${{ inputs.bedrock_model }}
+          JOB_STATUS: ${{ job.status }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 << 'PY'
+          import os
+          import datetime
+
+          def fmt_int(val):
+              try:
+                  return f"{int(val):,}"
+              except Exception:
+                  return "0"
+
+          input_tokens = fmt_int(os.environ.get("INPUT_TOKENS", "0"))
+          output_tokens = fmt_int(os.environ.get("OUTPUT_TOKENS", "0"))
+          cost = os.environ.get("COST", "$0.000")
+          duration = os.environ.get("DURATION", "N/A")
+          pr_number = os.environ.get("PR_NUMBER", "").strip()
+          item_title = os.environ.get("ITEM_TITLE", "unknown")
+          item_id = os.environ.get("ITEM_ID", "unknown")
+          model = os.environ.get("MODEL", "unknown")
+          job_status = os.environ.get("JOB_STATUS", "unknown")
+          server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+
+          if pr_number:
+              pr_link = f"[#{pr_number}]({server_url}/{repo}/pull/{pr_number})"
+          else:
+              pr_link = "N/A"
+
+          date_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+          entry_lines = [
+              f"## {date_str} — {item_id} (auto)",
+              "",
+              f"| Field | Value |",
+              f"|-------|-------|",
+              f"| Title | {item_title} |",
+              f"| Model | {model} |",
+              f"| Input tokens | {input_tokens} |",
+              f"| Output tokens | {output_tokens} |",
+              f"| Cost | {cost} |",
+              f"| Duration | {duration} |",
+              f"| Status | {job_status} |",
+              f"| PR | {pr_link} |",
+              "",
+          ]
+          entry = "\n".join(entry_lines)
+
+          costs_path = "COSTS.md"
+          header = "# Claude Session Costs\n\n"
+
+          if not os.path.exists(costs_path):
+              with open(costs_path, "w") as fh:
+                  fh.write(header)
+
+          with open(costs_path, "a") as fh:
+              fh.write(entry + "\n")
+
+          print(f"Appended cost entry to {costs_path}")
+          PY
+
+      - name: Commit COSTS.md
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ITEM_ID: ${{ needs.pick-item.outputs.item_id }}
+        run: |
+          set -euo pipefail
+          if [ -f COSTS.md ] && ! git diff --quiet COSTS.md 2>/dev/null; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            BRANCH="auto/${ITEM_ID}"
+            git fetch origin "${BRANCH}" 2>/dev/null || true
+            if git rev-parse --verify "origin/${BRANCH}" &>/dev/null; then
+              git checkout -B "${BRANCH}" "origin/${BRANCH}"
+            fi
+            git add COSTS.md
+            git commit -m "chore: append COSTS.md session entry"
+            git push origin "${BRANCH}"
+            echo "✅ Pushed COSTS.md to PR branch ${BRANCH}"
+          else
+            echo "No changes to COSTS.md or file not found, skipping commit."
+          fi
