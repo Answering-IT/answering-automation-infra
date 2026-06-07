@@ -65,6 +65,7 @@ permissions:
   contents: write       # commit + push branch
   pull-requests: write  # open PR
   issues: write         # claude-code-action may comment
+  actions: read         # monitor-duration job queries job status
 
 # One run at a time per repo — prevents concurrent PRs against the same backlog.
 concurrency:
@@ -589,3 +590,119 @@ jobs:
             -H "Content-Type: application/json" \
             -d "${PAYLOAD}" \
             || echo "Discord notification failed, continuing"
+
+      - name: Notify Discord - Workflow Failed
+        id: notify-failed
+        if: failure()
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          ITEM_TITLE: ${{ needs.pick-item.outputs.item_title }}
+          DURATION: ${{ steps.calculate-duration.outputs.formatted }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          VERIFY_PR_OUTCOME: ${{ steps.verify-pr.outcome }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Determine failure reason based on step outcomes
+          REASON="Unknown error — check workflow logs"
+          if [ "${CLAUDE_OUTCOME}" = "failure" ]; then
+            REASON="Claude invocation error (Bedrock)"
+          elif [ "${VERIFY_PR_OUTCOME}" = "failure" ]; then
+            REASON="PR creation failed"
+          fi
+
+          PAYLOAD=$(cat << 'EOF'
+          {
+            "embeds": [{
+              "title": "❌ Auto Maintain Failed",
+              "description": "Failed to implement: ${ITEM_TITLE}",
+              "color": 15158332,
+              "fields": [
+                {"name": "Repo", "value": "${REPO}", "inline": true},
+                {"name": "Duration", "value": "${DURATION}", "inline": true},
+                {"name": "Reason", "value": "${REASON}", "inline": false},
+                {"name": "Run", "value": "[View logs](${RUN_URL})", "inline": false}
+              ],
+              "timestamp": "${TIMESTAMP}"
+            }]
+          }
+          EOF
+          )
+
+          curl -X POST "${DISCORD_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            || echo "Discord notification failed, continuing"
+
+  monitor-duration:
+    name: Monitor long-running sessions
+    runs-on: ubuntu-latest
+    needs: pick-item
+    if: needs.pick-item.outputs.has_item == 'true'
+    # Run concurrently with implement job — DO NOT add 'needs: [implement]'
+
+    steps:
+      - name: Wait 10 minutes
+        run: sleep 600
+
+      - name: Check implement job status via GitHub API
+        id: check-status
+        run: |
+          # Query the current workflow run's jobs
+          JOBS_RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs")
+
+          IMPLEMENT_STATUS=$(echo "$JOBS_RESPONSE" | jq -r '.jobs[] | select(.name | contains("Implement with Claude")) | .status')
+          echo "implement_status=$IMPLEMENT_STATUS" >> $GITHUB_OUTPUT
+          echo "Implement job status: $IMPLEMENT_STATUS"
+
+      - name: Send long-running alert to Discord
+        if: steps.check-status.outputs.implement_status == 'in_progress'
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          ITEM_ID: ${{ needs.pick-item.outputs.item_id }}
+          ITEM_TITLE: ${{ needs.pick-item.outputs.item_title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "DISCORD_WEBHOOK_URL not configured, skipping notification"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          PAYLOAD=$(cat << 'EOF'
+          {
+            "embeds": [{
+              "title": "🚨 Long-Running Claude Session",
+              "description": "Session duration exceeded 10 minutes",
+              "color": 15158332,
+              "fields": [
+                {"name": "Repo", "value": "${REPO}", "inline": true},
+                {"name": "Item", "value": "${ITEM_ID}", "inline": true},
+                {"name": "Duration", "value": "10m+ (still running)", "inline": true},
+                {"name": "Status", "value": "still running", "inline": true},
+                {"name": "Run", "value": "[View workflow run](${RUN_URL})", "inline": false}
+              ],
+              "timestamp": "${TIMESTAMP}"
+            }]
+          }
+          EOF
+          )
+
+          curl -X POST "${DISCORD_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            || echo "Discord long-running alert failed, continuing"
