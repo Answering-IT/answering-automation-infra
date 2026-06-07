@@ -37,3 +37,7 @@ vendor/
 # Temporary files
 *.log
 .auto-maintain/
+
+# github
+.trees/
+logs/
