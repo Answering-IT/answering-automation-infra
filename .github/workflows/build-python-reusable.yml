@@ -53,6 +53,14 @@ jobs:
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           fi
+          # Install test requirements FIRST (for moto, pytest plugins, etc.)
+          # This avoids conflicts with runtime boto3/botocore versions
+          if [ -f tests/requirements.txt ]; then
+            pip install -r tests/requirements.txt
+          elif [ -d tests/unit ]; then
+            # Fallback: install moto if tests/unit exists but no requirements.txt
+            pip install 'moto[dynamodb]' boto3
+          fi
           # Install runtime deps - check common patterns:
           #   - Top-level requirements.txt (single-app projects)
           #   - agents/requirements.txt (kb-rag-agent pattern)
@@ -68,14 +76,6 @@ jobs:
             echo "Installing Lambda deps: $req"
             pip install -r "$req"
           done
-          # Install test requirements (for moto, pytest plugins, etc.)
-          if [ -f tests/requirements.txt ]; then
-            pip install -r tests/requirements.txt
-          fi
-          # Install common test dependencies if tests/ directory exists
-          if [ -d tests/unit ]; then
-            pip install 'moto[dynamodb]' boto3 || true
-          fi
 
       - name: Run pytest
         run: |
