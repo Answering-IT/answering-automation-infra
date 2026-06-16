@@ -93,9 +93,10 @@ jobs:
           if [ -d tests/unit ]; then
             echo "Running tests from tests/unit/ directory"
             # Try to run V3-specific tests first (if they exist)
-            if ls tests/unit/*v3*.py 2>/dev/null; then
-              echo "Found V3-specific tests, running those"
-              pytest tests/unit/*v3*.py tests/unit/*V3*.py -v --tb=short 2>/dev/null
+            v3_tests=$(find tests/unit -name "*v3*.py" -o -name "*V3*.py" 2>/dev/null | tr '\n' ' ')
+            if [ -n "$v3_tests" ]; then
+              echo "Found V3-specific tests, running those: $v3_tests"
+              pytest $v3_tests -v --tb=short
               rc=$?
             else
               echo "Running all tests in tests/unit/"
