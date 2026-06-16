@@ -68,10 +68,20 @@ jobs:
             echo "Installing Lambda deps: $req"
             pip install -r "$req"
           done
+          # Install test requirements (for moto, pytest plugins, etc.)
+          if [ -f tests/requirements.txt ]; then
+            pip install -r tests/requirements.txt
+          fi
+          # Install common test dependencies if tests/ directory exists
+          if [ -d tests/unit ]; then
+            pip install 'moto[dynamodb]' boto3 || true
+          fi
 
       - name: Run pytest
         run: |
-          # Run unit/smoke marked tests.
+          # Run tests based on project structure:
+          # 1. If tests/unit/ exists, run those tests
+          # 2. Otherwise, run tests marked with 'unit' or 'smoke'
           # pytest exit codes:
           #   0 = all tests passed
           #   1 = some tests failed
@@ -80,11 +90,18 @@ jobs:
           # Treat exit code 5 as success — projects can adopt markers
           # gradually without being blocked by the gate.
           set +e
-          pytest -m "unit or smoke" --tb=short
-          rc=$?
+          if [ -d tests/unit ]; then
+            echo "Running tests from tests/unit/ directory"
+            pytest tests/unit/ -v --tb=short
+            rc=$?
+          else
+            echo "Running tests marked 'unit' or 'smoke'"
+            pytest -m "unit or smoke" --tb=short
+            rc=$?
+          fi
           set -e
           if [ "$rc" = "5" ]; then
-            echo "::notice::No tests marked 'unit' or 'smoke' found — skipping. Add @pytest.mark.unit or @pytest.mark.smoke to enable gating."
+            echo "::notice::No unit tests found — skipping. Add tests to tests/unit/ or use @pytest.mark.unit/@pytest.mark.smoke markers."
             exit 0
           fi
           exit $rc
