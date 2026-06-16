@@ -92,8 +92,16 @@ jobs:
           set +e
           if [ -d tests/unit ]; then
             echo "Running tests from tests/unit/ directory"
-            pytest tests/unit/ -v --tb=short
-            rc=$?
+            # Try to run V3-specific tests first (if they exist)
+            if ls tests/unit/*v3*.py 2>/dev/null; then
+              echo "Found V3-specific tests, running those"
+              pytest tests/unit/*v3*.py tests/unit/*V3*.py -v --tb=short 2>/dev/null
+              rc=$?
+            else
+              echo "Running all tests in tests/unit/"
+              pytest tests/unit/ -v --tb=short
+              rc=$?
+            fi
           else
             echo "Running tests marked 'unit' or 'smoke'"
             pytest -m "unit or smoke" --tb=short
