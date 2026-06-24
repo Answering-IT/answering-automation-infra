@@ -154,16 +154,18 @@ def parse_issue_metadata(body: str) -> dict:
 def extract_acceptance_criteria(body: str) -> list[str]:
     """Extract acceptance criteria from issue body.
 
-    Looks for sections like:
-    ## Acceptance Criteria
+    Looks for sections like (English or Spanish header):
+    ## Acceptance Criteria      |  ## Criterios de Aceptación
     - [ ] item 1
     - [ ] item 2
     """
     criteria = []
 
-    # Find acceptance criteria section
+    # Find acceptance criteria section. Accept English and Spanish headers
+    # (the /spec skill emits Spanish "Criterios de Aceptación"). Accent on the
+    # final "o" is optional so "Aceptacion" without the accent also matches.
     ac_match = re.search(
-        r"##\s+Acceptance Criteria\s*\n(.*?)(?=\n##|\n---|\Z)",
+        r"##\s+(?:Acceptance\s+Criteria|Criterios\s+de\s+Aceptaci[oó]n)\s*\n(.*?)(?=\n##|\n---|\Z)",
         body,
         re.DOTALL | re.IGNORECASE,
     )
