@@ -52,12 +52,25 @@ on:
         required: false
         type: string
         default: 'arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole'
+      bedrock_model_docs:
+        description: 'Bedrock model for type:docs issues (used when sdd_mode=true)'
+        required: false
+        type: string
+        default: 'us.anthropic.claude-haiku-4-5-20251001'
+      bedrock_model_complex:
+        description: 'Bedrock model for type:complex issues (used when sdd_mode=true)'
+        required: false
+        type: string
+        default: 'us.anthropic.claude-opus-4-8'
     secrets:
       AUTO_MAINTAIN_APP_ID:
         required: true
       AUTO_MAINTAIN_APP_PRIVATE_KEY:
         required: true
       DISCORD_WEBHOOK_URL:
+        required: false
+      CLAUDE_ACCESS_TOKEN:
+        description: 'Claude Pro OAuth token — preferred over Bedrock when set'
         required: false
 
 permissions:
@@ -98,6 +111,44 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Unblock spec:waiting issues whose blocking PR merged
+        if: inputs.use_github_issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 << 'PY'
+          import json, re, subprocess
+
+          result = subprocess.run(
+              ['gh', 'issue', 'list', '--label', 'spec:waiting',
+               '--json', 'number,body', '--limit', '50'],
+              capture_output=True, text=True
+          )
+          issues = json.loads(result.stdout or '[]')
+
+          for issue in issues:
+              num  = issue['number']
+              body = issue.get('body', '') or ''
+              m    = re.search(r'(?i)(?:depends on|blocked by|requires)\s+#(\d+)', body)
+              if not m:
+                  print(f"#{num}: no dependency declared, restoring to spec:ready")
+                  subprocess.run(['gh', 'issue', 'edit', str(num),
+                                  '--remove-label', 'spec:waiting', '--add-label', 'spec:ready'])
+                  continue
+              blocker = m.group(1)
+              r2 = subprocess.run(
+                  ['gh', 'pr', 'list', '--search', f'closes #{blocker}',
+                   '--state', 'open', '--json', 'number'],
+                  capture_output=True, text=True
+              )
+              if not json.loads(r2.stdout or '[]'):
+                  print(f"#{num}: #{blocker} merged — restoring to spec:ready")
+                  subprocess.run(['gh', 'issue', 'edit', str(num),
+                                  '--remove-label', 'spec:waiting', '--add-label', 'spec:ready'])
+              else:
+                  print(f"#{num}: still waiting for #{blocker}")
+          PY
 
       - name: Download parser from central repo
         run: |
@@ -181,17 +232,139 @@ jobs:
             exit 1
           fi
 
-  implement:
-    name: Implement with Claude
+  check-deps:
+    name: Check issue dependencies
     runs-on: ubuntu-latest
     needs: pick-item
     if: needs.pick-item.outputs.has_item == 'true'
+    outputs:
+      is_blocked:    ${{ steps.check.outputs.is_blocked }}
+      blocker_issue: ${{ steps.check.outputs.blocker_issue }}
+      blocker_pr:    ${{ steps.check.outputs.blocker_pr }}
+      item_issue:    ${{ steps.check.outputs.item_issue }}
+
+    steps:
+      - name: Ensure spec:waiting label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "spec:waiting" --color "e99d42" \
+            --description "Waiting for a blocking PR to merge" --force 2>/dev/null || true
+
+      - name: Check dependencies
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ITEM_JSON: ${{ needs.pick-item.outputs.item_json }}
+        run: |
+          ISSUE_NUM=$(echo "$ITEM_JSON" | python3 -c \
+            "import json,sys; print(json.load(sys.stdin).get('github_issue_ref','').lstrip('#'))")
+          echo "item_issue=$ISSUE_NUM" >> $GITHUB_OUTPUT
+
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "is_blocked=false" >> $GITHUB_OUTPUT
+            echo "No GitHub issue ref — skipping"
+            exit 0
+          fi
+
+          BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body // ""' 2>/dev/null || echo "")
+          BLOCKER=$(echo "$BODY" | python3 -c "
+          import re, sys
+          m = re.search(r'(?i)(?:depends on|blocked by|requires)\s+#(\d+)', sys.stdin.read())
+          print(m.group(1) if m else '')
+          ")
+
+          if [ -z "$BLOCKER" ]; then
+            echo "is_blocked=false" >> $GITHUB_OUTPUT
+            echo "#$ISSUE_NUM: no dependency declared"
+            exit 0
+          fi
+
+          OPEN_PR=$(gh pr list --search "closes #$BLOCKER" --state open \
+            --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
+
+          if [ -n "$OPEN_PR" ]; then
+            echo "is_blocked=true"     >> $GITHUB_OUTPUT
+            echo "blocker_issue=$BLOCKER" >> $GITHUB_OUTPUT
+            echo "blocker_pr=$OPEN_PR" >> $GITHUB_OUTPUT
+            echo "BLOCKED: #$ISSUE_NUM waiting for PR #$OPEN_PR (closes #$BLOCKER)"
+            gh issue edit "$ISSUE_NUM" \
+              --remove-label "spec:ready" --add-label "spec:waiting" 2>/dev/null || true
+          else
+            echo "is_blocked=false" >> $GITHUB_OUTPUT
+            echo "#$ISSUE_NUM: dependency #$BLOCKER is merged — OK"
+          fi
+
+      - name: Notify Discord — issue blocked by open PR
+        if: steps.check.outputs.is_blocked == 'true'
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          ITEM_ISSUE:    ${{ steps.check.outputs.item_issue }}
+          BLOCKER_ISSUE: ${{ steps.check.outputs.blocker_issue }}
+          BLOCKER_PR:    ${{ steps.check.outputs.blocker_pr }}
+        run: |
+          python3 << 'PY'
+          import json, os, subprocess, datetime
+          webhook = os.environ.get('DISCORD_WEBHOOK_URL', '')
+          if not webhook:
+              raise SystemExit(0)
+          repo      = os.environ['REPO']
+          srv       = os.environ['SERVER_URL']
+          item      = os.environ['ITEM_ISSUE']
+          b_issue   = os.environ['BLOCKER_ISSUE']
+          b_pr      = os.environ['BLOCKER_PR']
+          pr_url    = f"{srv}/{repo}/pull/{b_pr}"
+          ts        = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+          payload   = {"embeds": [{"title": "⏳ Issue waiting for PR review",
+              "color": 15105570,
+              "fields": [
+                  {"name": "Repo",        "value": repo,                                         "inline": True},
+                  {"name": "Blocked",     "value": f"#{item}",                                   "inline": True},
+                  {"name": "Blocking PR", "value": f"[#{b_pr}]({pr_url}) — closes #{b_issue}", "inline": False},
+                  {"name": "Action",      "value": f"Merge PR #{b_pr} to unblock #{item}",       "inline": False}
+              ], "timestamp": ts}]}
+          subprocess.run(['curl', '-sS', '-X', 'POST', webhook,
+                         '-H', 'Content-Type: application/json',
+                         '-d', json.dumps(payload)], check=False)
+          PY
+
+  implement:
+    name: Implement with Claude
+    runs-on: ubuntu-latest
+    needs: [pick-item, check-deps]
+    if: needs.pick-item.outputs.has_item == 'true' && needs.check-deps.outputs.is_blocked != 'true'
     timeout-minutes: 30
 
     steps:
       - name: Record start time
         id: start-timer
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: SDD — resolve issue number and model
+        id: sdd-meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ITEM_JSON: ${{ needs.pick-item.outputs.item_json }}
+          DEFAULT_MODEL: ${{ inputs.bedrock_model }}
+          DOCS_MODEL: ${{ inputs.bedrock_model_docs }}
+          COMPLEX_MODEL: ${{ inputs.bedrock_model_complex }}
+        run: |
+          ISSUE_NUM=$(echo "$ITEM_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('github_issue_ref','').lstrip('#'))")
+          echo "issue_number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          LABELS=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name]' 2>/dev/null || echo "[]")
+          IS_DOCS=$(echo "$LABELS"    | python3 -c "import json,sys; print(str('type:docs'    in json.load(sys.stdin)).lower())")
+          IS_COMPLEX=$(echo "$LABELS" | python3 -c "import json,sys; print(str('type:complex' in json.load(sys.stdin)).lower())")
+          if [ "$IS_DOCS" = "true" ]; then
+            echo "model=$DOCS_MODEL" >> $GITHUB_OUTPUT
+          elif [ "$IS_COMPLEX" = "true" ]; then
+            echo "model=$COMPLEX_MODEL" >> $GITHUB_OUTPUT
+          else
+            echo "model=$DEFAULT_MODEL" >> $GITHUB_OUTPUT
+          fi
+          echo "Resolved: issue=#$ISSUE_NUM  is_docs=$IS_DOCS  is_complex=$IS_COMPLEX"
 
       - name: Notify Discord - Workflow Started
         id: notify-started
@@ -248,6 +421,15 @@ jobs:
           role-to-assume: ${{ inputs.aws_role_arn }}
           aws-region: ${{ inputs.aws_region }}
 
+      - name: SDD — mark spec:in-progress
+        if: steps.sdd-meta.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue edit ${{ steps.sdd-meta.outputs.issue_number }} \
+            --remove-label "spec:ready" \
+            --add-label "spec:in-progress" || true
+
       - name: Build prompt for Claude
         id: prompt
         env:
@@ -257,72 +439,41 @@ jobs:
           set -euo pipefail
           mkdir -p .auto-maintain
           python <<'PY' > .auto-maintain/prompt.md
-          import json, os, textwrap
+          import json, os
 
           item = json.loads(os.environ["ITEM_JSON"])
           lang = os.environ["LANGUAGE"]
 
-          # Language-specific gate commands
           gates = {
-              "python": ["ruff check .", "black --check .", "pytest -m \"unit or smoke\""],
-              "typescript": ["npm run lint", "npm run build", "npm test"],
-              "go": ["golangci-lint run", "go build ./...", "go test ./..."]
+              "python":     "ruff check . && black --check . && pytest -m 'unit or smoke'",
+              "typescript": "npm run lint && npm run build && npm test",
+              "go":         "golangci-lint run && go build ./... && go test ./..."
           }
+          gate_cmd = gates.get(lang, gates["python"])
+          closes   = f" · `Closes {item['github_issue_ref']}`" if item.get('github_issue_ref') else ""
 
           parts = []
-          parts.append(f"You are implementing backlog item **{item['id']}** in this repository.\n")
-          parts.append(f"## Title\n{item['title']}\n")
-          parts.append(f"## Why this matters\n{item['context']}\n")
+          parts.append(f"Implement **{item['id']}**: {item['title']}\n")
+          parts.append(f"## Why\n{item['context']}\n")
           parts.append("## Acceptance criteria\n" + "\n".join(f"- {c}" for c in item['acceptance_criteria']) + "\n")
 
           if item.get('files_to_touch'):
-              parts.append("## Likely files to touch (hints, not prescriptive)\n" +
-                           "\n".join(f"- `{p}`" for p in item['files_to_touch']) + "\n")
+              parts.append("## Files (hints)\n" + "\n".join(f"- `{p}`" for p in item['files_to_touch']) + "\n")
           if item.get('tests_required'):
-              parts.append("## Tests required\n" +
-                           "\n".join(f"- {t}" for t in item['tests_required']) + "\n")
+              parts.append("## Tests\n" + "\n".join(f"- {t}" for t in item['tests_required']) + "\n")
           if item.get('notes'):
               parts.append(f"## Notes\n{item['notes']}\n")
 
-          gate_cmds = gates.get(lang, gates["python"])
+          parts.append(
+              f"## Do\n"
+              f"1. DDD: map entities + use cases before coding\n"
+              f"2. TDD: failing tests first → implement → refactor\n"
+              f"3. Gates: `{gate_cmd}` — all must pass\n"
+              f"4. Branch `auto/{item['id']}` (already created) · PR title `auto({item['id']}): {item['title']}`\n"
+              f"5. PR body: what changed + criteria checkboxes{closes} · labels `automated backlog-driven`\n"
+          )
 
-          # Build PR description requirements
-          pr_desc_parts = [
-              "- A short \"what changed\" section",
-              "- The acceptance criteria, with checkboxes ticked for what's done",
-              "- Any blockers or follow-ups, if applicable"
-          ]
-
-          # If this is from a GitHub Issue, add closing keyword
-          if item.get('github_issue_ref'):
-              pr_desc_parts.append(f"- At the end, add: `Closes {item['github_issue_ref']}`")
-
-          pr_desc_requirements = chr(10).join(f"  {p}" for p in pr_desc_parts)
-
-          parts.append(textwrap.dedent(f"""
-              ## Working agreement
-
-              - Stay within the scope described above. Don't refactor unrelated code.
-              - Follow the existing patterns in the codebase. Prefer editing files over creating new ones.
-              - Run the local gates before finishing:
-                {chr(10).join(f"  - `{cmd}`" for cmd in gate_cmds)}
-              - All gates must pass. If a fix would require changing more than the acceptance criteria
-                imply, stop and document the blocker in the PR description rather than expanding scope.
-              - When you commit, branch name must be `auto/{item['id']}` (it is already created for you).
-              - Open a single PR titled exactly: `auto({item['id']}): {item['title']}`
-              - The PR description must include:
-              {pr_desc_requirements}
-              - Apply the labels `automated` and `backlog-driven` to the PR.
-
-              ## Repo conventions
-              - Follow existing code style and patterns in this repository.
-              - Do not introduce new top-level dependencies without justification.
-              - Tests should be isolated and fast.
-
-              Now do the work.
-              """).strip())
-
-          print("\n\n".join(parts))
+          print("\n".join(parts))
           PY
           echo "prompt_path=.auto-maintain/prompt.md" >> "$GITHUB_OUTPUT"
 
@@ -335,22 +486,45 @@ jobs:
           echo "::notice::Dry run requested. Skipping Claude invocation and PR creation."
           exit 0
 
-      - name: Run Claude Code (Bedrock)
+      - name: Detect auth method
+        id: auth
+        env:
+          TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "use_bedrock=false" >> $GITHUB_OUTPUT
+            echo "::notice::Auth: Claude Pro OAuth (CLAUDE_ACCESS_TOKEN)"
+          else
+            echo "use_bedrock=true" >> $GITHUB_OUTPUT
+            echo "::notice::Auth: AWS Bedrock (fallback)"
+          fi
+
+      - name: Resolve effective model
+        id: effective-model
+        run: |
+          if [ "${{ inputs.sdd_mode }}" = "true" ] && [ -n "${{ steps.sdd-meta.outputs.model }}" ]; then
+            echo "model=${{ steps.sdd-meta.outputs.model }}" >> $GITHUB_OUTPUT
+          else
+            echo "model=${{ inputs.bedrock_model }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Claude Code
         id: claude
         if: ${{ !inputs.dry_run }}
         uses: anthropics/claude-code-action@v1
         with:
-          use_bedrock: 'true'
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          use_bedrock: ${{ steps.auth.outputs.use_bedrock }}
           github_token: ${{ steps.app-token.outputs.token }}
           branch_prefix: 'auto/'
           base_branch: main
           prompt: ${{ steps.prompt.outputs.prompt_path }}
           show_full_output: 'true'
           claude_args: |
-            --model ${{ inputs.bedrock_model }}
+            --model ${{ steps.effective-model.outputs.model }}
             --max-turns 40
             --permission-mode acceptEdits
-            --allowedTools "Read,Glob,Grep,LS,Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git branch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git fetch:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue list:*),Bash(gh label create:*),Bash(ruff:*),Bash(black:*),Bash(pytest:*),Bash(python:*),Bash(python3:*),Bash(pip:*),Bash(pip3:*),Bash(npm:*),Bash(npx:*),Bash(go:*),Bash(golangci-lint:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(mkdir:*),Bash(test:*)"
+            --allowedTools "Read,Glob,Grep,LS,Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git branch:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git fetch:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh label create:*),Bash(ruff:*),Bash(black:*),Bash(pytest:*),Bash(python:*),Bash(python3:*),Bash(pip:*),Bash(pip3:*),Bash(npm:*),Bash(npx:*),Bash(go:*),Bash(golangci-lint:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(mkdir:*),Bash(test:*)"
         env:
           AWS_REGION: ${{ inputs.aws_region }}
 
@@ -442,6 +616,56 @@ jobs:
           echo "seconds=${SECONDS_ELAPSED}" >> "$GITHUB_OUTPUT"
           echo "formatted=${FORMATTED}" >> "$GITHUB_OUTPUT"
           echo "Duration: ${FORMATTED} (${SECONDS_ELAPSED}s)"
+
+      - name: SDD — update issue labels and comment on failure
+        if: always() && !inputs.dry_run && steps.sdd-meta.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUM: ${{ steps.sdd-meta.outputs.issue_number }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          PR_OUTCOME: ${{ steps.verify-pr.outcome }}
+          PR_NUMBER: ${{ steps.verify-pr.outputs.pr_number }}
+          COST: ${{ steps.token-usage.outputs.cost }}
+          DURATION: ${{ steps.calculate-duration.outputs.formatted }}
+          MODEL: ${{ steps.effective-model.outputs.model }}
+          USE_BEDROCK: ${{ steps.auth.outputs.use_bedrock }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ "$USE_BEDROCK" = "true" ] && AUTH_LABEL="Bedrock" || AUTH_LABEL="Pro OAuth"
+
+          if [ "$CLAUDE_OUTCOME" = "success" ] && [ "$PR_OUTCOME" = "success" ] && [ -n "$PR_NUMBER" ]; then
+            gh issue edit "$ISSUE_NUM" \
+              --remove-label "spec:in-progress" \
+              --add-label "spec:review" || true
+          else
+            gh issue edit "$ISSUE_NUM" \
+              --remove-label "spec:in-progress" \
+              --add-label "spec:blocked" 2>/dev/null || true
+
+            if [ "$CLAUDE_OUTCOME" != "success" ]; then
+              REASON="Claude terminó con error. Revisa los logs de Actions."
+            elif [ -z "$PR_NUMBER" ] || [ "$PR_OUTCOME" != "success" ]; then
+              REASON="Claude no creó PR. Posiblemente no hizo commits (spec ambiguo o demasiado grande)."
+            else
+              REASON="Error desconocido en el workflow."
+            fi
+
+            BODY=$(printf '%s\n' \
+              "❌ **Implementación fallida**" \
+              "" \
+              "**Razón:** $REASON" \
+              "" \
+              "| Campo | Valor |" \
+              "|---|---|" \
+              "| Modelo | \`$MODEL\` ($AUTH_LABEL) |" \
+              "| Costo | $COST |" \
+              "| Tiempo | $DURATION |" \
+              "| Logs | [Ver en Actions]($RUN_URL) |" \
+              "" \
+              "Cambia la etiqueta a \`spec:ready\` para reintentar.")
+
+            gh issue comment "$ISSUE_NUM" --body "$BODY" || true
+          fi
 
       - name: Append COSTS.md entry
         if: always()
@@ -645,8 +869,8 @@ jobs:
   monitor-duration:
     name: Monitor long-running sessions
     runs-on: ubuntu-latest
-    needs: pick-item
-    if: needs.pick-item.outputs.has_item == 'true'
+    needs: [pick-item, check-deps]
+    if: needs.pick-item.outputs.has_item == 'true' && needs.check-deps.outputs.is_blocked != 'true'
     # Run concurrently with implement job — DO NOT add 'needs: [implement]'
 
     steps:
