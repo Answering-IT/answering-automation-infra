@@ -513,7 +513,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: anthropics/claude-code-action@v1
         with:
-          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
           use_bedrock: ${{ steps.auth.outputs.use_bedrock }}
           github_token: ${{ steps.app-token.outputs.token }}
           branch_prefix: 'auto/'
