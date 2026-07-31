@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [1.0.19] - 2026-07-31
 
 ### Added
-- `build-typescript-reusable.yml`: optional `runner` input, defaulting to `ubuntu-latest`, so a caller can move the lint, build and test gates onto a self-hosted runner with `with: runner: self-hosted`. Existing callers are unaffected — omitting the input reproduces the previous behaviour exactly.
+- `build-typescript-reusable.yml` and `build-python-reusable.yml`: optional `runner` input, defaulting to `ubuntu-latest`, so a caller can move the gates onto a self-hosted runner with `with: runner: self-hosted`. Existing callers are unaffected — omitting the input reproduces the previous behaviour exactly. `build-go-reusable.yml` still hardcodes `ubuntu-latest`.
 
   Named `runner` rather than `runs-on` because GitHub expressions parse `inputs.runs-on` as a subtraction, which would force `inputs['runs-on']` at every use site.
 
