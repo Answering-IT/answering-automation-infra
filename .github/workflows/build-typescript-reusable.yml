@@ -2,6 +2,15 @@ name: Build & Gates (TypeScript - Reusable)
 
 on:
   workflow_call:
+    inputs:
+      runner:
+        description: >-
+          Runner label for all three jobs. Defaults to ubuntu-latest, so existing
+          callers are unaffected. Set it to self-hosted to run the gates on an
+          Answering self-hosted runner.
+        type: string
+        required: false
+        default: ubuntu-latest
 
 permissions:
   contents: read
@@ -9,7 +18,7 @@ permissions:
 jobs:
   lint:
     name: Lint & Format
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -28,7 +37,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -47,7 +56,7 @@ jobs:
 
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
