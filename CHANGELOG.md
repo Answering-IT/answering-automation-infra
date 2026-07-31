@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.0.19] - 2026-07-31
+
+### Added
+- `build-typescript-reusable.yml` and `build-python-reusable.yml`: optional `runner` input, defaulting to `ubuntu-latest`, so a caller can move the gates onto a self-hosted runner with `with: runner: self-hosted`. Existing callers are unaffected — omitting the input reproduces the previous behaviour exactly. `build-go-reusable.yml` still hardcodes `ubuntu-latest`.
+
+  Named `runner` rather than `runs-on` because GitHub expressions parse `inputs.runs-on` as a subtraction, which would force `inputs['runs-on']` at every use site.
+
+  Motivation: `kb-rag-agent` moved its own jobs to a self-hosted runner, but `cdk-build` declares `needs: typescript-gates`, so while these gates are pinned to `ubuntu-latest` the whole workflow stops there whenever GitHub-hosted runners are unavailable.
+
+> Note: entries between 1.0.5 and 1.0.18 were never recorded here, though the tags exist. This entry resumes the log rather than reconstructing that gap.
+
+---
+
 ## [1.0.4] - 2026-06-04
 
 ### Fixed
